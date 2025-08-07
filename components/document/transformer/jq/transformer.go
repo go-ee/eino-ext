@@ -55,7 +55,7 @@ type AggregationAction struct {
 	TargetField   string  `yaml:"target_field" json:"target_field"`
 	Mode          string  `yaml:"mode" json:"mode"`
 	JoinSeparator *string `yaml:"join_separator,omitempty" json:"join_separator,omitempty"`
-	LevelKey      string  `yaml:"level_key" json:"level_key"`
+	LevelField    string  `yaml:"level_key" json:"level_key"` // Renamed from LevelKey for consistency
 }
 
 type AggregationRule struct {
@@ -63,16 +63,17 @@ type AggregationRule struct {
 	SourceSelector string            `yaml:"source_selector" json:"source_selector"`
 	TargetSelector string            `yaml:"target_selector" json:"target_selector"`
 	Action         AggregationAction `yaml:"action" json:"action"`
-	sourceQuery    *gojq.Query
-	targetQuery    *gojq.Query
+
+	sourceQuery *gojq.Query
+	targetQuery *gojq.Query
 }
 
 type CustomTransform struct {
-	Name      string   `yaml:"name" json:"name"`
-	Selector  string   `yaml:"selector" json:"selector"`
-	Function  string   `yaml:"function" json:"function"`
-	TargetKey string   `yaml:"target_key" json:"target_key"`
-	Args      []string `yaml:"args" json:"args"`
+	Name        string   `yaml:"name" json:"name"`
+	Selector    string   `yaml:"selector" json:"selector"`
+	Function    string   `yaml:"function" json:"function"`
+	TargetField string   `yaml:"target_key" json:"target_key"` // Renamed from TargetKey for consistency
+	Args        []string `yaml:"args" json:"args"`
 
 	selectorQuery *gojq.Query
 	argQueries    []*gojq.Query
@@ -125,10 +126,9 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 			customTransforms: cfg.CustomTransforms,
 		}
 
-		// Simple parse, no special options needed.
+		// Parse transform query if provided
 		if cfg.Transform != "" {
-			configRule.transformQuery, err = gojq.Parse(cfg.Transform)
-			if err != nil {
+			if configRule.transformQuery, err = gojq.Parse(cfg.Transform); err != nil {
 				err = fmt.Errorf("failed to parse transform query: %w", err)
 				return
 			}
@@ -136,31 +136,37 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 
 		// Parse filter query if provided
 		if cfg.Filter != "" {
-			configRule.filterQuery, err = gojq.Parse(cfg.Filter)
-			if err != nil {
+			if configRule.filterQuery, err = gojq.Parse(cfg.Filter); err != nil {
 				err = fmt.Errorf("failed to parse filter query: %w", err)
 				return
 			}
 		}
 
+		// Parse aggregation rules
 		for i := range configRule.aggregationRules {
 			rule := &configRule.aggregationRules[i]
-			rule.sourceQuery, err = gojq.Parse(rule.SourceSelector)
-			if err != nil { /* ... handle error ... */
+			if rule.sourceQuery, err = gojq.Parse(rule.SourceSelector); err != nil {
+				err = fmt.Errorf("failed to parse source selector for rule '%s': %w", rule.Name, err)
+				return
 			}
-			rule.targetQuery, err = gojq.Parse(rule.TargetSelector)
-			if err != nil { /* ... handle error ... */
+			if rule.targetQuery, err = gojq.Parse(rule.TargetSelector); err != nil {
+				err = fmt.Errorf("failed to parse target selector for rule '%s': %w", rule.Name, err)
+				return
 			}
 		}
+
+		// Parse custom transforms
 		for i := range configRule.customTransforms {
 			rule := &configRule.customTransforms[i]
-			rule.selectorQuery, err = gojq.Parse(rule.Selector)
-			if err != nil { /* ... handle error ... */
+			if rule.selectorQuery, err = gojq.Parse(rule.Selector); err != nil {
+				err = fmt.Errorf("failed to parse selector for transform '%s': %w", rule.Name, err)
+				return
 			}
 			rule.argQueries = make([]*gojq.Query, len(rule.Args))
 			for j, argExpr := range rule.Args {
-				rule.argQueries[j], err = gojq.Parse(argExpr)
-				if err != nil { /* ... handle error ... */
+				if rule.argQueries[j], err = gojq.Parse(argExpr); err != nil {
+					err = fmt.Errorf("failed to parse arg %d for transform '%s': %w", j, rule.Name, err)
+					return
 				}
 			}
 		}
@@ -171,179 +177,170 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 }
 
 func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Document, opts ...document.TransformerOption) (documents []*schema.Document, err error) {
-	// Start with the original documents
 	documents = docs
 
 	// Process documents through each config in sequence
 	for _, configRule := range t.configRules {
-		// Apply the current config to the documents from the previous iteration
-		documents, err = t.applyConfigRules(ctx, configRule, documents)
-		if err != nil {
-			return nil, err
+		if documents, err = t.applyConfigRules(ctx, configRule, documents); err != nil {
+			return
 		}
 	}
 
-	return documents, nil
+	return
 }
 
 func (t *TransformerRules) applyConfigRules(_ context.Context, rules *ConfigRules, docs []*schema.Document) (documents []*schema.Document, err error) {
-	filteredDocs := make([]*schema.Document, 0, len(docs))
-
 	// Filter documents if filter query is defined
+	filteredDocs := docs
 	if rules.filterQuery != nil {
+		filteredDocs = make([]*schema.Document, 0, len(docs))
 		for _, doc := range docs {
 			docAsMap := docToMap(doc)
-			shouldKeep, err := t.shouldKeepDocument(rules.filterQuery, docAsMap)
-			if err != nil {
-				return nil, fmt.Errorf("document filtering failed: %w", err)
-			}
-			if shouldKeep {
+			var keep bool
+			if keep, err = runBoolQuery(rules.filterQuery, docAsMap); err != nil {
+				err = fmt.Errorf("document filtering failed: %w", err)
+				return
+			} else if keep {
 				filteredDocs = append(filteredDocs, doc)
 			}
 		}
-	} else {
-		filteredDocs = docs
 	}
 
-	// Continue with the filtered documents
-	joinBuffers := make(map[string][]*schema.Document) // Changed to store Documents directly
+	// Prepare buffers for aggregation
+	joinBuffers := make(map[string][]*schema.Document)
 	hierarchicalBuffers := make(map[string][]*LeveledDocument)
 
+	// Process each document
 	for _, doc := range filteredDocs {
-		// Consistently convert the doc to a map at the beginning of the loop.
 		docAsMap := docToMap(doc)
 
-		// Part 1: Individual Transformation
+		// Apply individual transformation
 		if rules.transformQuery != nil {
 			var transformedMap map[string]any
-			transformedMap, err = t.applyIndividualTransform(rules.transformQuery, docAsMap)
-			if err != nil {
-				documents = nil
+			if transformedMap, err = runMapQuery(rules.transformQuery, docAsMap); err != nil {
 				return
+			} else {
+				updateDocFromMap(doc, transformedMap)
+				// Refresh map in case the transform changed it
+				docAsMap = docToMap(doc)
 			}
-			// Update the document from the transformed map before proceeding.
-			if newContent, exists := transformedMap["content"].(string); exists {
-				doc.Content = newContent
-			}
-			if newMeta, exists := transformedMap["meta_data"].(map[string]any); exists {
-				doc.MetaData = newMeta
-			}
-			// Refresh docAsMap in case the transform changed it.
-			docAsMap = docToMap(doc)
 		}
 
-		// Part 2: Stateful Aggregation
+		// Apply aggregation rules
 		for i := range rules.aggregationRules {
 			rule := &rules.aggregationRules[i]
-			switch rule.Action.Mode {
-			case "hierarchical_by_level":
-				err = t.handleHierarchicalAggregation(doc, docAsMap, rule, hierarchicalBuffers)
-			default:
-				err = t.handleJoinAggregation(doc, docAsMap, rule, joinBuffers)
-			}
-			if err != nil {
-				documents = nil
-				return
+
+			if rule.Action.Mode == "hierarchical_by_level" {
+				if err = t.handleHierarchicalAggregation(doc, docAsMap, rule, hierarchicalBuffers); err != nil {
+					return
+				}
+			} else {
+				if err = t.handleJoinAggregation(doc, docAsMap, rule, joinBuffers); err != nil {
+					return
+				}
 			}
 		}
 
-		// Part 3: Custom Go Functions
+		// Apply custom transforms
 		for i := range rules.customTransforms {
 			rule := &rules.customTransforms[i]
 			var isTarget bool
-			isTarget, err = checkCondition(rule.selectorQuery, docAsMap)
-			if err != nil {
+			if isTarget, err = runBoolQuery(rule.selectorQuery, docAsMap); err != nil {
 				err = fmt.Errorf("rule '%s' selector check failed: %w", rule.Name, err)
-				documents = nil
 				return
-			}
-			if isTarget {
+			} else if isTarget {
 				if err = t.applyCustomFunction(doc, rule, docAsMap); err != nil {
-					documents = nil
 					return
 				}
 			}
 		}
 	}
 
-	// Set the return value to the filtered documents
 	documents = filteredDocs
 	return
 }
 
-// shouldKeepDocument evaluates if a document should be kept after filtering
-func (t *TransformerRules) shouldKeepDocument(filterQuery *gojq.Query, docAsMap map[string]any) (bool, error) {
-	iter := filterQuery.Run(docAsMap)
-	v, ok := iter.Next()
-	if !ok {
-		return false, nil // No result means don't keep
+// Common helper functions for query execution
+func runBoolQuery(query *gojq.Query, input map[string]any) (result bool, err error) {
+	iter := query.Run(input)
+	var v interface{}
+	var ok bool
+	if v, ok = iter.Next(); !ok {
+		result = false
+		return
 	}
 	if e, isErr := v.(error); isErr {
-		return false, fmt.Errorf("filter query error: %w", e)
+		err = e
+		return
 	}
-	result, ok := v.(bool)
-	if !ok {
-		return false, fmt.Errorf("filter query did not return a boolean, got %T", v)
+	var boolResult bool
+	if boolResult, ok = v.(bool); !ok {
+		err = fmt.Errorf("query did not return a boolean, got %T", v)
+		return
 	}
-	return result, nil
+	result = boolResult
+	return
 }
 
-// --- Handlers & Helpers ---
-
-func (t *TransformerRules) applyIndividualTransform(transformQuery *gojq.Query, input map[string]any) (result map[string]any, err error) {
-	iter := transformQuery.Run(input)
-	v, ok := iter.Next()
-	if !ok {
-		result = input // No change, return the original map
+func runMapQuery(query *gojq.Query, input map[string]any) (result map[string]any, err error) {
+	iter := query.Run(input)
+	var v interface{}
+	var ok bool
+	if v, ok = iter.Next(); !ok {
+		result = input
 		return
 	}
 	if e, isErr := v.(error); isErr {
 		err = fmt.Errorf("query error: %w", e)
 		return
 	}
-	result, ok = v.(map[string]any)
-	if !ok {
+	if result, ok = v.(map[string]any); !ok {
 		err = fmt.Errorf("query did not return a map")
+		return
 	}
 	return
 }
 
+// Update document from transformed map
+func updateDocFromMap(doc *schema.Document, transformedMap map[string]any) {
+	if newContent, exists := transformedMap["content"].(string); exists {
+		doc.Content = newContent
+	}
+	if newMeta, exists := transformedMap["meta_data"].(map[string]any); exists {
+		doc.MetaData = newMeta
+	}
+}
+
+// Aggregation handling functions
 func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string][]*schema.Document) (err error) {
-	isTarget, err := checkCondition(rule.targetQuery, docAsMap)
-	if err != nil {
+	// Check if document is a target for aggregation
+	var isTarget bool
+	if isTarget, err = runBoolQuery(rule.targetQuery, docAsMap); err != nil {
 		err = fmt.Errorf("rule '%s' target check failed: %w", rule.Name, err)
 		return
 	}
+
+	// Handle target document
 	if isTarget {
 		if sourceContents := buffers[rule.Name]; len(sourceContents) > 0 {
-			var contentsToAggregate []interface{}
+			// Collect content from source documents
+			contentsToAggregate := []interface{}{}
 			for _, sourceDoc := range sourceContents {
 				contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, sourceDoc)
 			}
 			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, doc)
 
-			if rule.Action.TargetField != "" {
-				if rule.Action.JoinSeparator == nil {
-					doc.MetaData[rule.Action.TargetField] = contentsToAggregate
-				} else {
-					doc.MetaData[rule.Action.TargetField] = join(contentsToAggregate, *rule.Action.JoinSeparator)
-				}
-			} else {
-				separator := "\t"
-				if rule.Action.JoinSeparator != nil {
-					separator = *rule.Action.JoinSeparator
-				}
+			// Apply aggregated content to target
+			applyAggregatedContent(doc, rule.Action, contentsToAggregate)
 
-				// Append to content (original behavior)
-				doc.Content = join(contentsToAggregate, separator)
-			}
 			// Clear the buffer after using it
 			buffers[rule.Name] = nil
 		}
 	}
 
-	isSource, err := checkCondition(rule.sourceQuery, docAsMap)
-	if err != nil {
+	// Check if document is a source for aggregation
+	var isSource bool
+	if isSource, err = runBoolQuery(rule.sourceQuery, docAsMap); err != nil {
 		err = fmt.Errorf("rule '%s' source check failed: %w", rule.Name, err)
 		return
 	}
@@ -355,77 +352,48 @@ func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap 
 }
 
 func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string][]*LeveledDocument) (err error) {
-	isTarget, err := checkCondition(rule.targetQuery, docAsMap)
-	if err != nil {
+	// Check if document is a target for aggregation
+	var isTarget bool
+	if isTarget, err = runBoolQuery(rule.targetQuery, docAsMap); err != nil {
 		err = fmt.Errorf("rule '%s' target check failed: %w", rule.Name, err)
 		return
 	}
 
+	// Handle target document
 	if isTarget {
 		buffer := buffers[rule.Name]
-		if len(buffer) == 0 {
-			return
-		}
-
-		targetLevelVal, ok := doc.MetaData[rule.Action.LevelKey]
-		if !ok {
-			err = fmt.Errorf("target doc %s missing level_key '%s'", doc.ID, rule.Action.LevelKey)
-			return
-		}
-
-		var targetLevel int
-		targetLevel, ok = toInt(targetLevelVal)
-		if !ok {
-			err = fmt.Errorf("level_key for doc %s is not a valid integer", doc.ID)
-			return
-		}
-
-		// Collect content from documents with levels < targetLevel
-		var contentsToAggregate []interface{}
-
-		for _, leveledDoc := range buffer {
-			if leveledDoc.Level < targetLevel {
-				contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, leveledDoc.Doc)
+		if len(buffer) > 0 {
+			var targetLevel int
+			if targetLevel, err = getLevelValue(doc, rule.Action.LevelField); err != nil {
+				return
 			}
-		}
-		contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, doc)
 
-		if len(contentsToAggregate) > 0 {
-			if rule.Action.TargetField != "" {
-				if rule.Action.JoinSeparator == nil {
-					doc.MetaData[rule.Action.TargetField] = contentsToAggregate
-				} else {
-					doc.MetaData[rule.Action.TargetField] = join(contentsToAggregate, *rule.Action.JoinSeparator)
+			// Collect content from documents with levels < targetLevel
+			contentsToAggregate := []interface{}{}
+			for _, leveledDoc := range buffer {
+				if leveledDoc.Level < targetLevel {
+					contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, leveledDoc.Doc)
 				}
-			} else {
-				separator := "\t"
-				if rule.Action.JoinSeparator != nil {
-					separator = *rule.Action.JoinSeparator
-				}
+			}
+			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, doc)
 
-				// Append to content (original behavior)
-				doc.Content = join(contentsToAggregate, separator)
+			// Apply aggregated content if there's anything to aggregate
+			if len(contentsToAggregate) > 0 {
+				applyAggregatedContent(doc, rule.Action, contentsToAggregate)
 			}
 		}
 	}
 
-	isSource, err := checkCondition(rule.sourceQuery, docAsMap)
-	if err != nil {
+	// Check if document is a source for aggregation
+	var isSource bool
+	if isSource, err = runBoolQuery(rule.sourceQuery, docAsMap); err != nil {
 		err = fmt.Errorf("rule '%s' source check failed: %w", rule.Name, err)
 		return
 	}
 
 	if isSource {
-		sourceLevelVal, ok := doc.MetaData[rule.Action.LevelKey]
-		if !ok {
-			err = fmt.Errorf("source doc %s missing level_key '%s'", doc.ID, rule.Action.LevelKey)
-			return
-		}
-
 		var sourceLevel int
-		sourceLevel, ok = toInt(sourceLevelVal)
-		if !ok {
-			err = fmt.Errorf("level_key for doc %s is not a valid integer", doc.ID)
+		if sourceLevel, err = getLevelValue(doc, rule.Action.LevelField); err != nil {
 			return
 		}
 
@@ -439,7 +407,7 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 		currentBuffer := buffers[rule.Name]
 		for i, existing := range currentBuffer {
 			if existing.Level >= sourceLevel {
-				// Cut all existing documents after this point, because they belong to previous target level only
+				// Cut all existing documents after this point
 				currentBuffer = currentBuffer[:i]
 				break
 			}
@@ -451,6 +419,40 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 	}
 
 	return
+}
+
+// Helper function to get level value from document
+func getLevelValue(doc *schema.Document, levelField string) (level int, err error) {
+	levelVal, ok := doc.MetaData[levelField]
+	if !ok {
+		err = fmt.Errorf("doc %s missing level_field '%s'", doc.ID, levelField)
+		return
+	}
+
+	var isInt bool
+	if level, isInt = toInt(levelVal); !isInt {
+		err = fmt.Errorf("level_field for doc %s is not a valid integer", doc.ID)
+		return
+	}
+
+	return
+}
+
+// Apply aggregated content to the target document
+func applyAggregatedContent(doc *schema.Document, action AggregationAction, contents []interface{}) {
+	if action.TargetField != "" {
+		if action.JoinSeparator == nil {
+			doc.MetaData[action.TargetField] = contents
+		} else {
+			doc.MetaData[action.TargetField] = join(contents, *action.JoinSeparator)
+		}
+	} else {
+		separator := "\t"
+		if action.JoinSeparator != nil {
+			separator = *action.JoinSeparator
+		}
+		doc.Content = join(contents, separator)
+	}
 }
 
 func appendFieldOrContent(contentsToAggregate []interface{}, sourceField string, doc *schema.Document) []interface{} {
@@ -472,8 +474,7 @@ func (t *TransformerRules) applyCustomFunction(doc *schema.Document, rule *Custo
 		return
 	}
 	var args []reflect.Value
-	args, err = t.extractArgs(rule.argQueries, docAsMap)
-	if err != nil {
+	if args, err = t.extractArgs(rule.argQueries, docAsMap); err != nil {
 		err = fmt.Errorf("failed to extract args for '%s': %w", rule.Function, err)
 		return
 	}
@@ -484,7 +485,7 @@ func (t *TransformerRules) applyCustomFunction(doc *schema.Document, rule *Custo
 			return
 		}
 	}
-	doc.MetaData[rule.TargetKey] = results[0].Interface()
+	doc.MetaData[rule.TargetField] = results[0].Interface()
 	return
 }
 
@@ -492,34 +493,15 @@ func (t *TransformerRules) extractArgs(argQueries []*gojq.Query, input map[strin
 	args = make([]reflect.Value, len(argQueries))
 	for i, q := range argQueries {
 		iter := q.Run(input)
-		v, ok := iter.Next()
-		if !ok {
+		var v interface{}
+		var ok bool
+		if v, ok = iter.Next(); !ok {
 			err = fmt.Errorf("arg query %d produced no value", i)
 			args = nil
 			return
 		}
 		args[i] = reflect.ValueOf(v)
 	}
-	return
-}
-
-func checkCondition(query *gojq.Query, input map[string]any) (isMatch bool, err error) {
-	iter := query.Run(input)
-	v, ok := iter.Next()
-	if !ok {
-		isMatch = false
-		return
-	}
-	if e, isErr := v.(error); isErr {
-		err = e
-		return
-	}
-	result, ok := v.(bool)
-	if !ok {
-		err = fmt.Errorf("selector query did not return a boolean, got %T", v)
-		return
-	}
-	isMatch = result
 	return
 }
 
@@ -551,10 +533,11 @@ func toInt(v any) (i int, ok bool) {
 	return
 }
 
-func join(input []interface{}, separator string) string {
-	result := make([]string, len(input))
+func join(input []interface{}, separator string) (result string) {
+	strs := make([]string, len(input))
 	for i, v := range input {
-		result[i] = fmt.Sprintf("%v", v)
+		strs[i] = fmt.Sprintf("%v", v)
 	}
-	return strings.Join(result, separator)
+	result = strings.Join(strs, separator)
+	return
 }
