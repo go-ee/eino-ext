@@ -262,60 +262,6 @@ func generateID(config *Config, i int) string {
 	return fmt.Sprintf("%s%d", config.IDPrefix, i)
 }
 
-// buildRowMetaData builds row metadata from row data and headers - extracted from the XlsxParser method
-func buildRowMetaData(config *Config, row []string, headers []string) map[string]any {
-	metaData := make(map[string]any)
-
-	// If Columns.Meta is defined, only process those columns
-	if len(config.Columns.Meta) > 0 {
-		for _, colLetter := range config.Columns.Meta {
-			colIndex := columnLetterToIndex(colLetter)
-			if colIndex < len(row) {
-				// Determine the key name - use custom name if available
-				keyName := colLetter
-				if !config.Columns.NoHeader && colIndex < len(headers) {
-					keyName = headers[colIndex]
-				}
-				if customName, ok := config.Columns.CustomNames[colLetter]; ok {
-					keyName = customName
-				}
-				metaData[keyName] = row[colIndex]
-			}
-		}
-	} else if !config.Columns.NoHeader && len(headers) > 0 {
-		// Default behavior: use all columns with headers as keys
-		for j, header := range headers {
-			if j < len(row) {
-				// Check if this column index has a custom name by finding the corresponding column letter
-				keyName := header
-				for colLetter, customName := range config.Columns.CustomNames {
-					colIndex := columnLetterToIndex(colLetter)
-					if colIndex == j {
-						keyName = customName
-						break
-					}
-				}
-				metaData[keyName] = row[j]
-			}
-		}
-	} else {
-		// For NoHeader case, use column letters as keys (A, B, C, ...)
-		for j := 0; j < len(row); j++ {
-			// Convert index to column letter (0 -> A, 1 -> B, etc.)
-			colLetter := indexToColumnLetter(j)
-
-			// Use custom name if available
-			keyName := colLetter
-			if customName, ok := config.Columns.CustomNames[colLetter]; ok {
-				keyName = customName
-			}
-
-			metaData[keyName] = row[j]
-		}
-	}
-	return metaData
-}
-
 // indexToColumnLetter converts a 0-based index to a column letter (A, B, C, ..., Z, AA, AB, ...)
 func indexToColumnLetter(index int) string {
 	var result string
