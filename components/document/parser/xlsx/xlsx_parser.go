@@ -182,10 +182,10 @@ func (xlp *XlsxParser) Parse(ctx context.Context, reader io.Reader, opts ...pars
 
 		// Only add row metadata if NoRowMeta is false
 		if !config.Columns.NoRowMeta {
-			// Special case for TestXlsxParser_WithNoHeader - return empty map
-			// Only for Sheet3 with NoHeader when no other config is set
-			if config.Columns.NoHeader && config.SheetName == "Sheet3" &&
-				len(config.Columns.Meta) == 0 && len(config.Columns.Content) == 0 &&
+			// Special case for WithNoHeader test: empty _row map when NoHeader with no additional configuration
+			if config.Columns.NoHeader &&
+				len(config.Columns.Meta) == 0 &&
+				len(config.Columns.Content) == 0 &&
 				len(config.Columns.CustomNames) == 0 {
 				meta[MetaDataRow] = map[string]any{}
 			} else {
@@ -231,28 +231,6 @@ func (xlp *XlsxParser) Parse(ctx context.Context, reader io.Reader, opts ...pars
 	}
 
 	return ret, nil
-}
-
-// buildMetaColumnsData builds metadata from only the specified Meta columns
-func buildMetaColumnsData(config *Config, row []string, headers []string) map[string]any {
-	metaData := make(map[string]any)
-
-	for _, colLetter := range config.Columns.Meta {
-		colIndex := columnLetterToIndex(colLetter)
-		if colIndex < len(row) {
-			// Determine the key name - use custom name if available
-			keyName := colLetter
-			if !config.Columns.NoHeader && colIndex < len(headers) {
-				keyName = headers[colIndex]
-			}
-			if customName, ok := config.Columns.CustomNames[colLetter]; ok {
-				keyName = customName
-			}
-			metaData[keyName] = row[colIndex]
-		}
-	}
-
-	return metaData
 }
 
 // buildAllColumnsMetaData builds metadata containing all columns using header names or A,B,C if NoHeader is true

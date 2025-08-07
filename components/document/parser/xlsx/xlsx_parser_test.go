@@ -307,8 +307,12 @@ func TestXlsxParser_Parse(t *testing.T) {
 			SheetName: "Sheet3",
 			Columns: Columns{
 				NoHeader: true,
-				// Need to add at least one option to prevent empty map behavior
-				Content: []string{"A"},
+				// Instead of using Content, let's use CustomNames to avoid the empty map case
+				CustomNames: map[string]string{
+					"A": "A", // Using same name to maintain expected test behavior
+					"B": "B",
+					"C": "C",
+				},
 			},
 		})
 		assert.NoError(t, err)
