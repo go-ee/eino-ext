@@ -51,29 +51,28 @@ func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, op
 
 // --- Configuration Structs with JSON annotations ---
 type AggregationAction struct {
-	SourceField   string  `yaml:"source_field" json:"source_field"`
-	TargetField   string  `yaml:"target_field" json:"target_field"`
-	Mode          string  `yaml:"mode" json:"mode"`
-	JoinSeparator *string `yaml:"join_separator,omitempty" json:"join_separator,omitempty"`
-	LevelField    string  `yaml:"level_key" json:"level_key"` // Renamed from LevelKey for consistency
+	Source    string  `yaml:"source" json:"source"`
+	Target    string  `yaml:"target" json:"target"`
+	Join      *string `yaml:"join,omitempty" json:"join,omitempty"`
+	Hierarchy *string `yaml:"hierarchy,omitempty" json:"hierarchy,omitempty"`
 }
 
 type AggregationRule struct {
-	Name           string            `yaml:"name" json:"name"`
-	SourceSelector string            `yaml:"source_selector" json:"source_selector"`
-	TargetSelector string            `yaml:"target_selector" json:"target_selector"`
-	Action         AggregationAction `yaml:"action" json:"action"`
+	Name   string            `yaml:"name" json:"name"`
+	Source string            `yaml:"source" json:"source"`
+	Target string            `yaml:"target" json:"target"`
+	Action AggregationAction `yaml:"action" json:"action"`
 
 	sourceQuery *gojq.Query
 	targetQuery *gojq.Query
 }
 
 type CustomTransform struct {
-	Name        string   `yaml:"name" json:"name"`
-	Selector    string   `yaml:"selector" json:"selector"`
-	Function    string   `yaml:"function" json:"function"`
-	TargetField string   `yaml:"target_key" json:"target_key"` // Renamed from TargetKey for consistency
-	Args        []string `yaml:"args" json:"args"`
+	Name     string   `yaml:"name" json:"name"`
+	Selector string   `yaml:"selector" json:"selector"`
+	Function string   `yaml:"function" json:"function"`
+	Target   string   `yaml:"target" json:"target"`
+	Args     []string `yaml:"args" json:"args"`
 
 	selectorQuery *gojq.Query
 	argQueries    []*gojq.Query
@@ -145,11 +144,11 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 		// Parse aggregation rules
 		for i := range configRule.aggregationRules {
 			rule := &configRule.aggregationRules[i]
-			if rule.sourceQuery, err = gojq.Parse(rule.SourceSelector); err != nil {
+			if rule.sourceQuery, err = gojq.Parse(rule.Source); err != nil {
 				err = fmt.Errorf("failed to parse source selector for rule '%s': %w", rule.Name, err)
 				return
 			}
-			if rule.targetQuery, err = gojq.Parse(rule.TargetSelector); err != nil {
+			if rule.targetQuery, err = gojq.Parse(rule.Target); err != nil {
 				err = fmt.Errorf("failed to parse target selector for rule '%s': %w", rule.Name, err)
 				return
 			}
@@ -230,7 +229,7 @@ func (t *TransformerRules) applyConfigRules(_ context.Context, rules *ConfigRule
 		for i := range rules.aggregationRules {
 			rule := &rules.aggregationRules[i]
 
-			if rule.Action.Mode == "hierarchical_by_level" {
+			if rule.Action.Hierarchy != nil {
 				if err = t.handleHierarchicalAggregation(doc, docAsMap, rule, hierarchicalBuffers); err != nil {
 					return
 				}
@@ -326,9 +325,9 @@ func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap 
 			// Collect content from source documents
 			contentsToAggregate := []interface{}{}
 			for _, sourceDoc := range sourceContents {
-				contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, sourceDoc)
+				contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.Source, sourceDoc)
 			}
-			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, doc)
+			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.Source, doc)
 
 			// Apply aggregated content to target
 			applyAggregatedContent(doc, rule.Action, contentsToAggregate)
@@ -364,7 +363,7 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 		buffer := buffers[rule.Name]
 		if len(buffer) > 0 {
 			var targetLevel int
-			if targetLevel, err = getLevelValue(doc, rule.Action.LevelField); err != nil {
+			if targetLevel, err = getLevelValue(doc, *rule.Action.Hierarchy); err != nil {
 				return
 			}
 
@@ -372,10 +371,10 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 			contentsToAggregate := []interface{}{}
 			for _, leveledDoc := range buffer {
 				if leveledDoc.Level < targetLevel {
-					contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, leveledDoc.Doc)
+					contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.Source, leveledDoc.Doc)
 				}
 			}
-			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, doc)
+			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.Source, doc)
 
 			// Apply aggregated content if there's anything to aggregate
 			if len(contentsToAggregate) > 0 {
@@ -393,7 +392,7 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 
 	if isSource {
 		var sourceLevel int
-		if sourceLevel, err = getLevelValue(doc, rule.Action.LevelField); err != nil {
+		if sourceLevel, err = getLevelValue(doc, *rule.Action.Hierarchy); err != nil {
 			return
 		}
 
@@ -440,16 +439,16 @@ func getLevelValue(doc *schema.Document, levelField string) (level int, err erro
 
 // Apply aggregated content to the target document
 func applyAggregatedContent(doc *schema.Document, action AggregationAction, contents []interface{}) {
-	if action.TargetField != "" {
-		if action.JoinSeparator == nil {
-			doc.MetaData[action.TargetField] = contents
+	if action.Target != "" {
+		if action.Join == nil {
+			doc.MetaData[action.Target] = contents
 		} else {
-			doc.MetaData[action.TargetField] = join(contents, *action.JoinSeparator)
+			doc.MetaData[action.Target] = join(contents, *action.Join)
 		}
 	} else {
 		separator := "\t"
-		if action.JoinSeparator != nil {
-			separator = *action.JoinSeparator
+		if action.Join != nil {
+			separator = *action.Join
 		}
 		doc.Content = join(contents, separator)
 	}
@@ -485,7 +484,7 @@ func (t *TransformerRules) applyCustomFunction(doc *schema.Document, rule *Custo
 			return
 		}
 	}
-	doc.MetaData[rule.TargetField] = results[0].Interface()
+	doc.MetaData[rule.Target] = results[0].Interface()
 	return
 }
 
