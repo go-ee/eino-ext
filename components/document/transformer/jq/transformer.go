@@ -89,11 +89,16 @@ type Config struct {
 
 // --- Core Logic Implementation ---
 
-type TransformerRules struct {
+// ConfigRules stores the compiled queries and rules for a single config
+type ConfigRules struct {
 	transformQuery   *gojq.Query
 	filterQuery      *gojq.Query
 	aggregationRules []AggregationRule
 	customTransforms []CustomTransform
+}
+
+type TransformerRules struct {
+	configRules      []*ConfigRules
 	functionRegistry map[string]any
 }
 
@@ -103,68 +108,92 @@ type LeveledDocument struct {
 	Doc   *schema.Document
 }
 
-func NewTransformerRules(cfg *Config, funcRegistry map[string]any) (transformer *TransformerRules, err error) {
-	if cfg == nil {
-		err = fmt.Errorf("configuration cannot be nil")
+func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transformer *TransformerRules, err error) {
+	if cfgs == nil || len(cfgs) == 0 {
+		err = fmt.Errorf("configurations cannot be nil or empty")
 		return
 	}
 
 	transformer = &TransformerRules{
 		functionRegistry: funcRegistry,
-		aggregationRules: cfg.Aggregation.Rules,
-		customTransforms: cfg.CustomTransforms,
+		configRules:      make([]*ConfigRules, 0, len(cfgs)),
 	}
 
-	// Simple parse, no special options needed.
-	if cfg.Transform != "" {
-		transformer.transformQuery, err = gojq.Parse(cfg.Transform)
-		if err != nil {
-			err = fmt.Errorf("failed to parse transform query: %w", err)
-			return
+	for _, cfg := range cfgs {
+		configRule := &ConfigRules{
+			aggregationRules: cfg.Aggregation.Rules,
+			customTransforms: cfg.CustomTransforms,
 		}
-	}
 
-	// Parse filter query if provided
-	if cfg.Filter != "" {
-		transformer.filterQuery, err = gojq.Parse(cfg.Filter)
-		if err != nil {
-			err = fmt.Errorf("failed to parse filter query: %w", err)
-			return
+		// Simple parse, no special options needed.
+		if cfg.Transform != "" {
+			configRule.transformQuery, err = gojq.Parse(cfg.Transform)
+			if err != nil {
+				err = fmt.Errorf("failed to parse transform query: %w", err)
+				return
+			}
 		}
-	}
 
-	for i := range transformer.aggregationRules {
-		rule := &transformer.aggregationRules[i]
-		rule.sourceQuery, err = gojq.Parse(rule.SourceSelector)
-		if err != nil { /* ... handle error ... */
+		// Parse filter query if provided
+		if cfg.Filter != "" {
+			configRule.filterQuery, err = gojq.Parse(cfg.Filter)
+			if err != nil {
+				err = fmt.Errorf("failed to parse filter query: %w", err)
+				return
+			}
 		}
-		rule.targetQuery, err = gojq.Parse(rule.TargetSelector)
-		if err != nil { /* ... handle error ... */
-		}
-	}
-	for i := range transformer.customTransforms {
-		rule := &transformer.customTransforms[i]
-		rule.selectorQuery, err = gojq.Parse(rule.Selector)
-		if err != nil { /* ... handle error ... */
-		}
-		rule.argQueries = make([]*gojq.Query, len(rule.Args))
-		for j, argExpr := range rule.Args {
-			rule.argQueries[j], err = gojq.Parse(argExpr)
+
+		for i := range configRule.aggregationRules {
+			rule := &configRule.aggregationRules[i]
+			rule.sourceQuery, err = gojq.Parse(rule.SourceSelector)
+			if err != nil { /* ... handle error ... */
+			}
+			rule.targetQuery, err = gojq.Parse(rule.TargetSelector)
 			if err != nil { /* ... handle error ... */
 			}
 		}
+		for i := range configRule.customTransforms {
+			rule := &configRule.customTransforms[i]
+			rule.selectorQuery, err = gojq.Parse(rule.Selector)
+			if err != nil { /* ... handle error ... */
+			}
+			rule.argQueries = make([]*gojq.Query, len(rule.Args))
+			for j, argExpr := range rule.Args {
+				rule.argQueries[j], err = gojq.Parse(argExpr)
+				if err != nil { /* ... handle error ... */
+				}
+			}
+		}
+
+		transformer.configRules = append(transformer.configRules, configRule)
 	}
 	return
 }
 
 func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Document, opts ...document.TransformerOption) (documents []*schema.Document, err error) {
+	// Start with the original documents
+	documents = docs
+
+	// Process documents through each config in sequence
+	for _, configRule := range t.configRules {
+		// Apply the current config to the documents from the previous iteration
+		documents, err = t.applyConfigRules(ctx, configRule, documents)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return documents, nil
+}
+
+func (t *TransformerRules) applyConfigRules(ctx context.Context, rules *ConfigRules, docs []*schema.Document) (documents []*schema.Document, err error) {
 	filteredDocs := make([]*schema.Document, 0, len(docs))
 
 	// Filter documents if filter query is defined
-	if t.filterQuery != nil {
+	if rules.filterQuery != nil {
 		for _, doc := range docs {
 			docAsMap := docToMap(doc)
-			shouldKeep, err := t.shouldKeepDocument(docAsMap)
+			shouldKeep, err := t.shouldKeepDocument(rules.filterQuery, docAsMap)
 			if err != nil {
 				return nil, fmt.Errorf("document filtering failed: %w", err)
 			}
@@ -185,9 +214,9 @@ func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Documen
 		docAsMap := docToMap(doc)
 
 		// Part 1: Individual Transformation
-		if t.transformQuery != nil {
+		if rules.transformQuery != nil {
 			var transformedMap map[string]any
-			transformedMap, err = t.applyIndividualTransform(docAsMap)
+			transformedMap, err = t.applyIndividualTransform(rules.transformQuery, docAsMap)
 			if err != nil {
 				documents = nil
 				return
@@ -204,8 +233,8 @@ func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Documen
 		}
 
 		// Part 2: Stateful Aggregation
-		for i := range t.aggregationRules {
-			rule := &t.aggregationRules[i]
+		for i := range rules.aggregationRules {
+			rule := &rules.aggregationRules[i]
 			switch rule.Action.Mode {
 			case "hierarchical_by_level":
 				err = t.handleHierarchicalAggregation(doc, docAsMap, rule, hierarchicalBuffers)
@@ -219,8 +248,8 @@ func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Documen
 		}
 
 		// Part 3: Custom Go Functions
-		for i := range t.customTransforms {
-			rule := &t.customTransforms[i]
+		for i := range rules.customTransforms {
+			rule := &rules.customTransforms[i]
 			var isTarget bool
 			isTarget, err = checkCondition(rule.selectorQuery, docAsMap)
 			if err != nil {
@@ -243,8 +272,8 @@ func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Documen
 }
 
 // shouldKeepDocument evaluates if a document should be kept after filtering
-func (t *TransformerRules) shouldKeepDocument(docAsMap map[string]any) (bool, error) {
-	iter := t.filterQuery.Run(docAsMap)
+func (t *TransformerRules) shouldKeepDocument(filterQuery *gojq.Query, docAsMap map[string]any) (bool, error) {
+	iter := filterQuery.Run(docAsMap)
 	v, ok := iter.Next()
 	if !ok {
 		return false, nil // No result means don't keep
@@ -261,8 +290,8 @@ func (t *TransformerRules) shouldKeepDocument(docAsMap map[string]any) (bool, er
 
 // --- Handlers & Helpers ---
 
-func (t *TransformerRules) applyIndividualTransform(input map[string]any) (result map[string]any, err error) {
-	iter := t.transformQuery.Run(input)
+func (t *TransformerRules) applyIndividualTransform(transformQuery *gojq.Query, input map[string]any) (result map[string]any, err error) {
+	iter := transformQuery.Run(input)
 	v, ok := iter.Next()
 	if !ok {
 		result = input // No change, return the original map

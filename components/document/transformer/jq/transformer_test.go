@@ -36,7 +36,27 @@ func newTestTransformer(t *testing.T, yamlConfig string, funcRegistry map[string
 		t.Fatalf("Failed to unmarshal test YAML config: %v", err)
 	}
 
-	rules, err := NewTransformerRules(&cfg, funcRegistry)
+	rules, err := NewTransformerRules([]*Config{&cfg}, funcRegistry)
+	if err != nil {
+		t.Fatalf("NewTransformerRules failed: %v", err)
+	}
+	return rules
+}
+
+// newMultiConfigTestTransformer creates a transformer with multiple configs
+func newMultiConfigTestTransformer(t *testing.T, yamlConfigs []string, funcRegistry map[string]any) *TransformerRules {
+	t.Helper()
+
+	configs := make([]*Config, len(yamlConfigs))
+	for i, yamlConfig := range yamlConfigs {
+		var cfg Config
+		if err := yaml.Unmarshal([]byte(yamlConfig), &cfg); err != nil {
+			t.Fatalf("Failed to unmarshal test YAML config %d: %v", i, err)
+		}
+		configs[i] = &cfg
+	}
+
+	rules, err := NewTransformerRules(configs, funcRegistry)
 	if err != nil {
 		t.Fatalf("NewTransformerRules failed: %v", err)
 	}
@@ -196,7 +216,7 @@ func TestNewTransformerRules_ErrorCases(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(invalidConfig), &cfg); err != nil {
 			t.Fatalf("Unmarshal failed: %v", err)
 		}
-		_, err := NewTransformerRules(&cfg, nil)
+		_, err := NewTransformerRules([]*Config{&cfg}, nil)
 		if err == nil {
 			t.Fatal("Expected an error for invalid JQ syntax, but got nil")
 		}
@@ -416,5 +436,104 @@ transform: |
 		if !strings.HasSuffix(doc.Content, " (transformed)") {
 			t.Errorf("Transformation not applied to document %s", doc.ID)
 		}
+	}
+}
+
+func TestMultipleConfigurations(t *testing.T) {
+	config1 := `
+transform: |
+  .meta_data.stage = "first_transform"
+  | .content = (.content + " (first)")
+`
+	config2 := `
+transform: |
+  .meta_data.stage = "second_transform"
+  | .content = (.content + " (second)")
+`
+	rules := newMultiConfigTestTransformer(t, []string{config1, config2}, nil)
+
+	docs := []*schema.Document{
+		{
+			ID:       "doc-1",
+			Content:  "Original",
+			MetaData: map[string]any{},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	if len(transformed) != 1 {
+		t.Fatalf("Expected 1 document, got %d", len(transformed))
+	}
+
+	// Document should be processed by both configs in sequence
+	expectedContent := "Original (first) (second)"
+	if transformed[0].Content != expectedContent {
+		t.Errorf("Expected content '%s', got '%s'", expectedContent, transformed[0].Content)
+	}
+
+	// The metadata should reflect the last transformation
+	expectedStage := "second_transform"
+	if stage := transformed[0].MetaData["stage"]; stage != expectedStage {
+		t.Errorf("Expected meta stage '%s', got '%v'", expectedStage, stage)
+	}
+}
+
+func TestMultipleFilterConfigurations(t *testing.T) {
+	config1 := `
+filter: |
+  .meta_data.score >= 50
+transform: |
+  .meta_data.passed_first = true
+`
+	config2 := `
+filter: |
+  .meta_data.category == "important"
+transform: |
+  .meta_data.passed_second = true
+`
+	rules := newMultiConfigTestTransformer(t, []string{config1, config2}, nil)
+
+	docs := []*schema.Document{
+		{
+			ID:       "doc-1", // Will pass both filters
+			Content:  "Important high score",
+			MetaData: map[string]any{"score": 80, "category": "important"},
+		},
+		{
+			ID:       "doc-2", // Will pass first filter only
+			Content:  "High score but not important",
+			MetaData: map[string]any{"score": 75, "category": "normal"},
+		},
+		{
+			ID:       "doc-3", // Will be filtered out by first filter
+			Content:  "Important but low score",
+			MetaData: map[string]any{"score": 30, "category": "important"},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	// Only doc-1 should pass both filters and have both flags
+	if len(transformed) != 1 {
+		t.Fatalf("Expected 1 document after filtering, got %d", len(transformed))
+	}
+
+	if transformed[0].ID != "doc-1" {
+		t.Errorf("Expected doc-1 to pass both filters, got %s", transformed[0].ID)
+	}
+
+	if !transformed[0].MetaData["passed_first"].(bool) {
+		t.Errorf("Expected doc-1 to have passed_first=true")
+	}
+
+	if !transformed[0].MetaData["passed_second"].(bool) {
+		t.Errorf("Expected doc-1 to have passed_second=true")
 	}
 }
