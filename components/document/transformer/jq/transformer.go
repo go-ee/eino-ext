@@ -109,7 +109,7 @@ type LeveledDocument struct {
 }
 
 func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transformer *TransformerRules, err error) {
-	if cfgs == nil || len(cfgs) == 0 {
+	if len(cfgs) == 0 {
 		err = fmt.Errorf("configurations cannot be nil or empty")
 		return
 	}
