@@ -3,6 +3,7 @@ package jq
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,7 +36,27 @@ func newTestTransformer(t *testing.T, yamlConfig string, funcRegistry map[string
 		t.Fatalf("Failed to unmarshal test YAML config: %v", err)
 	}
 
-	rules, err := NewTransformerRules(&cfg, funcRegistry)
+	rules, err := NewTransformerRules([]*Config{&cfg}, funcRegistry)
+	if err != nil {
+		t.Fatalf("NewTransformerRules failed: %v", err)
+	}
+	return rules
+}
+
+// newMultiConfigTestTransformer creates a transformer with multiple configs
+func newMultiConfigTestTransformer(t *testing.T, yamlConfigs []string, funcRegistry map[string]any) *TransformerRules {
+	t.Helper()
+
+	configs := make([]*Config, len(yamlConfigs))
+	for i, yamlConfig := range yamlConfigs {
+		var cfg Config
+		if err := yaml.Unmarshal([]byte(yamlConfig), &cfg); err != nil {
+			t.Fatalf("Failed to unmarshal test YAML config %d: %v", i, err)
+		}
+		configs[i] = &cfg
+	}
+
+	rules, err := NewTransformerRules(configs, funcRegistry)
 	if err != nil {
 		t.Fatalf("NewTransformerRules failed: %v", err)
 	}
@@ -105,7 +126,7 @@ aggregation:
 	}
 
 	targetDoc := transformed[2]
-	expectedContent := "Definition.\n\n--- Aggregated Content ---\n\nFirst part | Second part"
+	expectedContent := "First part | Second part | Definition."
 	if targetDoc.Content != expectedContent {
 		t.Errorf("Expected aggregated content '%s', got '%s'", expectedContent, targetDoc.Content)
 	}
@@ -195,7 +216,7 @@ func TestNewTransformerRules_ErrorCases(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(invalidConfig), &cfg); err != nil {
 			t.Fatalf("Unmarshal failed: %v", err)
 		}
-		_, err := NewTransformerRules(&cfg, nil)
+		_, err := NewTransformerRules([]*Config{&cfg}, nil)
 		if err == nil {
 			t.Fatal("Expected an error for invalid JQ syntax, but got nil")
 		}
@@ -360,5 +381,226 @@ transform: |
 
 	if val, exists := transformed[1].MetaData["citation"]; exists && val != nil {
 		t.Errorf("Expected citation to be nil, got %v", val)
+	}
+}
+
+func TestDocumentFiltering(t *testing.T) {
+	config := `
+filter: |
+  .meta_data.type == "include"
+transform: |
+  .content = (.content + " (transformed)")
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{
+			ID:       "doc-1",
+			Content:  "Keep this",
+			MetaData: map[string]any{"type": "include"},
+		},
+		{
+			ID:       "doc-2",
+			Content:  "Filter this out",
+			MetaData: map[string]any{"type": "exclude"},
+		},
+		{
+			ID:       "doc-3",
+			Content:  "Keep this too",
+			MetaData: map[string]any{"type": "include"},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	// Should only have 2 documents after filtering
+	if len(transformed) != 2 {
+		t.Fatalf("Expected 2 documents after filtering, got %d", len(transformed))
+	}
+
+	// Verify IDs of remaining documents
+	ids := []string{transformed[0].ID, transformed[1].ID}
+	expectedIDs := []string{"doc-1", "doc-3"}
+
+	for _, id := range expectedIDs {
+		if !slices.Contains(ids, id) {
+			t.Errorf("Expected document %s to be kept, but it was filtered out", id)
+		}
+	}
+
+	// Verify transformation was applied to remaining documents
+	for _, doc := range transformed {
+		if !strings.HasSuffix(doc.Content, " (transformed)") {
+			t.Errorf("Transformation not applied to document %s", doc.ID)
+		}
+	}
+}
+
+func TestMultipleConfigurations(t *testing.T) {
+	config1 := `
+transform: |
+  .meta_data.stage = "first_transform"
+  | .content = (.content + " (first)")
+`
+	config2 := `
+transform: |
+  .meta_data.stage = "second_transform"
+  | .content = (.content + " (second)")
+`
+	rules := newMultiConfigTestTransformer(t, []string{config1, config2}, nil)
+
+	docs := []*schema.Document{
+		{
+			ID:       "doc-1",
+			Content:  "Original",
+			MetaData: map[string]any{},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	if len(transformed) != 1 {
+		t.Fatalf("Expected 1 document, got %d", len(transformed))
+	}
+
+	// Document should be processed by both configs in sequence
+	expectedContent := "Original (first) (second)"
+	if transformed[0].Content != expectedContent {
+		t.Errorf("Expected content '%s', got '%s'", expectedContent, transformed[0].Content)
+	}
+
+	// The metadata should reflect the last transformation
+	expectedStage := "second_transform"
+	if stage := transformed[0].MetaData["stage"]; stage != expectedStage {
+		t.Errorf("Expected meta stage '%s', got '%v'", expectedStage, stage)
+	}
+}
+
+func TestMultipleFilterConfigurations(t *testing.T) {
+	config1 := `
+filter: |
+  .meta_data.score >= 50
+transform: |
+  .meta_data.passed_first = true
+`
+	config2 := `
+filter: |
+  .meta_data.category == "important"
+transform: |
+  .meta_data.passed_second = true
+`
+	rules := newMultiConfigTestTransformer(t, []string{config1, config2}, nil)
+
+	docs := []*schema.Document{
+		{
+			ID:       "doc-1", // Will pass both filters
+			Content:  "Important high score",
+			MetaData: map[string]any{"score": 80, "category": "important"},
+		},
+		{
+			ID:       "doc-2", // Will pass first filter only
+			Content:  "High score but not important",
+			MetaData: map[string]any{"score": 75, "category": "normal"},
+		},
+		{
+			ID:       "doc-3", // Will be filtered out by first filter
+			Content:  "Important but low score",
+			MetaData: map[string]any{"score": 30, "category": "important"},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	// Only doc-1 should pass both filters and have both flags
+	if len(transformed) != 1 {
+		t.Fatalf("Expected 1 document after filtering, got %d", len(transformed))
+	}
+
+	if transformed[0].ID != "doc-1" {
+		t.Errorf("Expected doc-1 to pass both filters, got %s", transformed[0].ID)
+	}
+
+	if !transformed[0].MetaData["passed_first"].(bool) {
+		t.Errorf("Expected doc-1 to have passed_first=true")
+	}
+
+	if !transformed[0].MetaData["passed_second"].(bool) {
+		t.Errorf("Expected doc-1 to have passed_second=true")
+	}
+}
+
+func TestAggregationWithFields(t *testing.T) {
+	// Test with both source_field and target_field
+	config := `
+aggregation:
+  rules:
+    - name: "Aggregate metadata fields"
+      source_selector: '.meta_data.type == "source"'
+      target_selector: '.meta_data.type == "target"'
+      action:
+        source_field: "extract_me"
+        target_field: "aggregated_data"
+        mode: "join"
+        join_separator: ", "
+    - name: "Aggregate as array"
+      source_selector: '.meta_data.type == "array_source"'
+      target_selector: '.meta_data.type == "array_target"'
+      action:
+        source_field: "extract_me"
+        target_field: "aggregated_array"
+        mode: "join"
+        # No join_separator - should result in array storage
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{ID: "source-1", MetaData: map[string]any{"type": "source", "extract_me": "Value One"}},
+		{ID: "source-2", MetaData: map[string]any{"type": "source", "extract_me": "Value Two"}},
+		{ID: "target-1", Content: "Target doc", MetaData: map[string]any{"type": "target"}},
+
+		{ID: "array-source-1", MetaData: map[string]any{"type": "array_source", "extract_me": "Array One"}},
+		{ID: "array-source-2", MetaData: map[string]any{"type": "array_source", "extract_me": "Array Two"}},
+		{ID: "array-target", Content: "Array target", MetaData: map[string]any{"type": "array_target"}},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	// Check string aggregation
+	targetDoc := transformed[2] // The target-1 document
+
+	// Verify the metadata field contains the aggregated values
+	if aggregated, ok := targetDoc.MetaData["aggregated_data"].(string); !ok {
+		t.Errorf("Expected aggregated_data to be a string, got %T", targetDoc.MetaData["aggregated_data"])
+	} else if aggregated != "Value One, Value Two" {
+		t.Errorf("Expected aggregated value 'Value One, Value Two', got '%s'", aggregated)
+	}
+
+	// Verify the original content wasn't modified
+	if targetDoc.Content != "Target doc" {
+		t.Errorf("Expected content to remain 'Target doc', got '%s'", targetDoc.Content)
+	}
+
+	// Check array aggregation
+	arrayTargetDoc := transformed[5] // The array-target document
+
+	// Verify the metadata field contains the array
+	if aggregatedArray, ok := arrayTargetDoc.MetaData["aggregated_array"].([]any); !ok {
+		t.Errorf("Expected aggregated_array to be []any, got %T", arrayTargetDoc.MetaData["aggregated_array"])
+	} else if len(aggregatedArray) != 2 {
+		t.Errorf("Expected array with 2 items, got %d", len(aggregatedArray))
+	} else if aggregatedArray[0] != "Array One" || aggregatedArray[1] != "Array Two" {
+		t.Errorf("Expected array with ['Array One', 'Array Two'], got %v", aggregatedArray)
 	}
 }
