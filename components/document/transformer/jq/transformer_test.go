@@ -106,11 +106,11 @@ func TestJoinAggregation(t *testing.T) {
 aggregation:
   rules:
     - name: "Aggregate simple prose"
-      source_selector: '.meta_data.type == "prose"'
-      target_selector: '.meta_data.type == "def"'
+      source: '.meta_data.type == "prose"'
+      target: '.meta_data.type == "def"'
       action:
         mode: "join"
-        join_separator: " | "
+        join: " | "
 `
 	rules := newTestTransformer(t, config, nil)
 
@@ -137,12 +137,11 @@ func TestHierarchicalAggregation(t *testing.T) {
 aggregation:
   rules:
     - name: "Aggregate hierarchical"
-      source_selector: '.meta_data.level != null'
-      target_selector: '.meta_data.type == "def"'
+      source: '.meta_data.level != null'
+      target: '.meta_data.type == "def"'
       action:
-        mode: "hierarchical_by_level"
-        level_key: "level"
-        join_separator: "\n"
+        hierarchy: "level"
+        join: "\n"
 `
 	rules := newTestTransformer(t, config, nil)
 
@@ -173,7 +172,7 @@ custom_transforms:
   - name: "Generate token"
     selector: '.meta_data.needs_token == true'
     function: "generate_user_token"
-    target_key: "auth_token"
+    target: "auth_token"
     args: [ .id, .meta_data.author ]
 `
 	rules := newTestTransformer(t, config, testFuncRegistry)
@@ -539,26 +538,25 @@ transform: |
 }
 
 func TestAggregationWithFields(t *testing.T) {
-	// Test with both source_field and target_field
+	// Test with both source and target
 	config := `
 aggregation:
   rules:
     - name: "Aggregate metadata fields"
-      source_selector: '.meta_data.type == "source"'
-      target_selector: '.meta_data.type == "target"'
+      source: '.meta_data.type == "source"'
+      target: '.meta_data.type == "target"'
       action:
-        source_field: "extract_me"
-        target_field: "aggregated_data"
-        mode: "join"
-        join_separator: ", "
+        source: "extract_me"
+        target: "aggregated_data"
+        join: ", "
     - name: "Aggregate as array"
-      source_selector: '.meta_data.type == "array_source"'
-      target_selector: '.meta_data.type == "array_target"'
+      source: '.meta_data.type == "array_source"'
+      target: '.meta_data.type == "array_target"'
       action:
-        source_field: "extract_me"
-        target_field: "aggregated_array"
+        source: "extract_me"
+        target: "aggregated_array"
         mode: "join"
-        # No join_separator - should result in array storage
+        # No join - should result in array storage
 `
 	rules := newTestTransformer(t, config, nil)
 
