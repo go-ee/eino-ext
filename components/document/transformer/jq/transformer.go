@@ -3,8 +3,9 @@ package jq
 import (
 	"context"
 	"fmt"
+	"log"
 	"reflect"
-	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/cloudwego/eino/components/document"
@@ -39,12 +40,12 @@ func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, op
 		rules = t.Rules
 	}
 
-	if rules == nil {
-		err = fmt.Errorf("jq transformer rules not provided in options and no default rules available")
-		return
+	if rules != nil {
+		documents, err = rules.Transform(ctx, docs, opts...)
+	} else {
+		log.Println("No jq transformer rules provided, skipping transformation.")
+		documents = docs
 	}
-
-	documents, err = rules.Transform(ctx, docs, opts...)
 	return
 }
 
@@ -67,17 +68,19 @@ type AggregationRule struct {
 }
 
 type CustomTransform struct {
-	Name          string   `yaml:"name" json:"name"`
-	Selector      string   `yaml:"selector" json:"selector"`
-	Function      string   `yaml:"function" json:"function"`
-	TargetKey     string   `yaml:"target_key" json:"target_key"`
-	Args          []string `yaml:"args" json:"args"`
+	Name      string   `yaml:"name" json:"name"`
+	Selector  string   `yaml:"selector" json:"selector"`
+	Function  string   `yaml:"function" json:"function"`
+	TargetKey string   `yaml:"target_key" json:"target_key"`
+	Args      []string `yaml:"args" json:"args"`
+
 	selectorQuery *gojq.Query
 	argQueries    []*gojq.Query
 }
 
 type Config struct {
 	Transform   string `yaml:"transform" json:"transform"`
+	Filter      string `yaml:"filter" json:"filter"`
 	Aggregation struct {
 		Rules []AggregationRule `yaml:"rules" json:"rules"`
 	} `yaml:"aggregation" json:"aggregation"`
@@ -88,9 +91,16 @@ type Config struct {
 
 type TransformerRules struct {
 	transformQuery   *gojq.Query
+	filterQuery      *gojq.Query
 	aggregationRules []AggregationRule
 	customTransforms []CustomTransform
 	functionRegistry map[string]any
+}
+
+// LeveledDocument represents a document with an associated level
+type LeveledDocument struct {
+	Level int
+	Doc   *schema.Document
 }
 
 func NewTransformerRules(cfg *Config, funcRegistry map[string]any) (transformer *TransformerRules, err error) {
@@ -113,6 +123,16 @@ func NewTransformerRules(cfg *Config, funcRegistry map[string]any) (transformer 
 			return
 		}
 	}
+
+	// Parse filter query if provided
+	if cfg.Filter != "" {
+		transformer.filterQuery, err = gojq.Parse(cfg.Filter)
+		if err != nil {
+			err = fmt.Errorf("failed to parse filter query: %w", err)
+			return
+		}
+	}
+
 	for i := range transformer.aggregationRules {
 		rule := &transformer.aggregationRules[i]
 		rule.sourceQuery, err = gojq.Parse(rule.SourceSelector)
@@ -138,11 +158,29 @@ func NewTransformerRules(cfg *Config, funcRegistry map[string]any) (transformer 
 }
 
 func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Document, opts ...document.TransformerOption) (documents []*schema.Document, err error) {
-	documents = docs
-	joinBuffers := make(map[string][]string)
-	hierarchicalBuffers := make(map[string]map[int]*schema.Document)
+	filteredDocs := make([]*schema.Document, 0, len(docs))
 
-	for _, doc := range docs {
+	// Filter documents if filter query is defined
+	if t.filterQuery != nil {
+		for _, doc := range docs {
+			docAsMap := docToMap(doc)
+			shouldKeep, err := t.shouldKeepDocument(docAsMap)
+			if err != nil {
+				return nil, fmt.Errorf("document filtering failed: %w", err)
+			}
+			if shouldKeep {
+				filteredDocs = append(filteredDocs, doc)
+			}
+		}
+	} else {
+		filteredDocs = docs
+	}
+
+	// Continue with the filtered documents
+	joinBuffers := make(map[string][]string)
+	hierarchicalBuffers := make(map[string][]*LeveledDocument)
+
+	for _, doc := range filteredDocs {
 		// Consistently convert the doc to a map at the beginning of the loop.
 		docAsMap := docToMap(doc)
 
@@ -198,7 +236,27 @@ func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Documen
 			}
 		}
 	}
+
+	// Set the return value to the filtered documents
+	documents = filteredDocs
 	return
+}
+
+// shouldKeepDocument evaluates if a document should be kept after filtering
+func (t *TransformerRules) shouldKeepDocument(docAsMap map[string]any) (bool, error) {
+	iter := t.filterQuery.Run(docAsMap)
+	v, ok := iter.Next()
+	if !ok {
+		return false, nil // No result means don't keep
+	}
+	if e, isErr := v.(error); isErr {
+		return false, fmt.Errorf("filter query error: %w", e)
+	}
+	result, ok := v.(bool)
+	if !ok {
+		return false, fmt.Errorf("filter query did not return a boolean, got %T", v)
+	}
+	return result, nil
 }
 
 // --- Handlers & Helpers ---
@@ -245,22 +303,25 @@ func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap 
 	return
 }
 
-func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string]map[int]*schema.Document) (err error) {
+func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string][]*LeveledDocument) (err error) {
 	isTarget, err := checkCondition(rule.targetQuery, docAsMap)
 	if err != nil {
 		err = fmt.Errorf("rule '%s' target check failed: %w", rule.Name, err)
 		return
 	}
+
 	if isTarget {
 		buffer := buffers[rule.Name]
 		if len(buffer) == 0 {
 			return
 		}
+
 		targetLevelVal, ok := doc.MetaData[rule.Action.LevelKey]
 		if !ok {
 			err = fmt.Errorf("target doc %s missing level_key '%s'", doc.ID, rule.Action.LevelKey)
 			return
 		}
+
 		var targetLevel int
 		targetLevel, ok = toInt(targetLevelVal)
 		if !ok {
@@ -268,41 +329,62 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 			return
 		}
 
-		contentsToAggregate := []string{doc.Content}
-		for i := targetLevel - 1; i >= 1; i-- {
-			if sourceDoc, ok := buffer[i]; ok {
-				contentsToAggregate = append(contentsToAggregate, sourceDoc.Content)
+		contentsToAggregate := []string{}
+
+		// Collect content from documents with levels < targetLevel
+		for _, leveledDoc := range buffer {
+			if leveledDoc.Level < targetLevel {
+				contentsToAggregate = append(contentsToAggregate, leveledDoc.Doc.Content)
 			}
 		}
 
-		if len(contentsToAggregate) > 1 {
-			slices.Reverse(contentsToAggregate)
+		if len(contentsToAggregate) > 0 {
+			contentsToAggregate = append(contentsToAggregate, doc.Content)
 			doc.Content = strings.Join(contentsToAggregate, rule.Action.JoinSeparator)
 		}
-		delete(buffers, rule.Name)
 	}
+
 	isSource, err := checkCondition(rule.sourceQuery, docAsMap)
 	if err != nil {
 		err = fmt.Errorf("rule '%s' source check failed: %w", rule.Name, err)
 		return
 	}
+
 	if isSource {
 		sourceLevelVal, ok := doc.MetaData[rule.Action.LevelKey]
 		if !ok {
 			err = fmt.Errorf("source doc %s missing level_key '%s'", doc.ID, rule.Action.LevelKey)
 			return
 		}
+
 		var sourceLevel int
 		sourceLevel, ok = toInt(sourceLevelVal)
 		if !ok {
 			err = fmt.Errorf("level_key for doc %s is not a valid integer", doc.ID)
 			return
 		}
-		if buffers[rule.Name] == nil {
-			buffers[rule.Name] = make(map[int]*schema.Document)
+
+		// Create a new LeveledDocument
+		leveledDoc := &LeveledDocument{
+			Level: sourceLevel,
+			Doc:   doc,
 		}
-		buffers[rule.Name][sourceLevel] = doc
+
+		// Find where to insert the new document to maintain order
+		currentBuffer := buffers[rule.Name]
+		for i, existing := range currentBuffer {
+			if existing.Level >= sourceLevel {
+				// Cut all existing documents after this point, because they belong to previous target level only
+				currentBuffer = currentBuffer[:i]
+				break
+			}
+		}
+		currentBuffer = append(currentBuffer, leveledDoc)
+
+		// Update the buffer
+		buffers[rule.Name] = currentBuffer
 	}
+
 	return
 }
 
@@ -382,6 +464,12 @@ func toInt(v any) (i int, ok bool) {
 		i, ok = int(val), true
 	case float64:
 		i, ok = int(val), true
+	default:
+		valueStr := fmt.Sprintf("%v", v)
+		var err error
+		if i, err = strconv.Atoi(valueStr); err == nil {
+			ok = true
+		}
 	}
 	return
 }

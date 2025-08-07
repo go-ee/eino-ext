@@ -3,6 +3,7 @@ package jq
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -360,5 +361,60 @@ transform: |
 
 	if val, exists := transformed[1].MetaData["citation"]; exists && val != nil {
 		t.Errorf("Expected citation to be nil, got %v", val)
+	}
+}
+
+func TestDocumentFiltering(t *testing.T) {
+	config := `
+filter: |
+  .meta_data.type == "include"
+transform: |
+  .content = (.content + " (transformed)")
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{
+			ID:       "doc-1",
+			Content:  "Keep this",
+			MetaData: map[string]any{"type": "include"},
+		},
+		{
+			ID:       "doc-2",
+			Content:  "Filter this out",
+			MetaData: map[string]any{"type": "exclude"},
+		},
+		{
+			ID:       "doc-3",
+			Content:  "Keep this too",
+			MetaData: map[string]any{"type": "include"},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	// Should only have 2 documents after filtering
+	if len(transformed) != 2 {
+		t.Fatalf("Expected 2 documents after filtering, got %d", len(transformed))
+	}
+
+	// Verify IDs of remaining documents
+	ids := []string{transformed[0].ID, transformed[1].ID}
+	expectedIDs := []string{"doc-1", "doc-3"}
+
+	for _, id := range expectedIDs {
+		if !slices.Contains(ids, id) {
+			t.Errorf("Expected document %s to be kept, but it was filtered out", id)
+		}
+	}
+
+	// Verify transformation was applied to remaining documents
+	for _, doc := range transformed {
+		if !strings.HasSuffix(doc.Content, " (transformed)") {
+			t.Errorf("Transformation not applied to document %s", doc.ID)
+		}
 	}
 }
