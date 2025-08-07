@@ -51,11 +51,11 @@ func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, op
 
 // --- Configuration Structs with JSON annotations ---
 type AggregationAction struct {
-	SourceField   string `yaml:"source_field" json:"source_field"`
-	TargetField   string `yaml:"target_field" json:"target_field"`
-	Mode          string `yaml:"mode" json:"mode"`
-	JoinSeparator string `yaml:"join_separator" json:"join_separator"`
-	LevelKey      string `yaml:"level_key" json:"level_key"`
+	SourceField   string  `yaml:"source_field" json:"source_field"`
+	TargetField   string  `yaml:"target_field" json:"target_field"`
+	Mode          string  `yaml:"mode" json:"mode"`
+	JoinSeparator *string `yaml:"join_separator,omitempty" json:"join_separator,omitempty"`
+	LevelKey      string  `yaml:"level_key" json:"level_key"`
 }
 
 type AggregationRule struct {
@@ -186,7 +186,7 @@ func (t *TransformerRules) Transform(ctx context.Context, docs []*schema.Documen
 	return documents, nil
 }
 
-func (t *TransformerRules) applyConfigRules(ctx context.Context, rules *ConfigRules, docs []*schema.Document) (documents []*schema.Document, err error) {
+func (t *TransformerRules) applyConfigRules(_ context.Context, rules *ConfigRules, docs []*schema.Document) (documents []*schema.Document, err error) {
 	filteredDocs := make([]*schema.Document, 0, len(docs))
 
 	// Filter documents if filter query is defined
@@ -206,7 +206,7 @@ func (t *TransformerRules) applyConfigRules(ctx context.Context, rules *ConfigRu
 	}
 
 	// Continue with the filtered documents
-	joinBuffers := make(map[string][]string)
+	joinBuffers := make(map[string][]*schema.Document) // Changed to store Documents directly
 	hierarchicalBuffers := make(map[string][]*LeveledDocument)
 
 	for _, doc := range filteredDocs {
@@ -308,7 +308,7 @@ func (t *TransformerRules) applyIndividualTransform(transformQuery *gojq.Query, 
 	return
 }
 
-func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string][]string) (err error) {
+func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string][]*schema.Document) (err error) {
 	isTarget, err := checkCondition(rule.targetQuery, docAsMap)
 	if err != nil {
 		err = fmt.Errorf("rule '%s' target check failed: %w", rule.Name, err)
@@ -316,18 +316,40 @@ func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap 
 	}
 	if isTarget {
 		if sourceContents := buffers[rule.Name]; len(sourceContents) > 0 {
-			aggregatedContent := strings.Join(sourceContents, rule.Action.JoinSeparator)
-			doc.Content += "\n\n--- Aggregated Content ---\n\n" + aggregatedContent
+			var contentsToAggregate []interface{}
+			for _, sourceDoc := range sourceContents {
+				contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, sourceDoc)
+			}
+			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, doc)
+
+			if rule.Action.TargetField != "" {
+				if rule.Action.JoinSeparator == nil {
+					doc.MetaData[rule.Action.TargetField] = contentsToAggregate
+				} else {
+					doc.MetaData[rule.Action.TargetField] = join(contentsToAggregate, *rule.Action.JoinSeparator)
+				}
+			} else {
+				separator := "\t"
+				if rule.Action.JoinSeparator != nil {
+					separator = *rule.Action.JoinSeparator
+				}
+
+				// Append to content (original behavior)
+				doc.Content = join(contentsToAggregate, separator)
+			}
+			// Clear the buffer after using it
 			buffers[rule.Name] = nil
 		}
 	}
+
 	isSource, err := checkCondition(rule.sourceQuery, docAsMap)
 	if err != nil {
 		err = fmt.Errorf("rule '%s' source check failed: %w", rule.Name, err)
 		return
 	}
+
 	if isSource {
-		buffers[rule.Name] = append(buffers[rule.Name], doc.Content)
+		buffers[rule.Name] = append(buffers[rule.Name], doc)
 	}
 	return
 }
@@ -358,18 +380,32 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 			return
 		}
 
-		contentsToAggregate := []string{}
-
 		// Collect content from documents with levels < targetLevel
+		var contentsToAggregate []interface{}
+
 		for _, leveledDoc := range buffer {
 			if leveledDoc.Level < targetLevel {
-				contentsToAggregate = append(contentsToAggregate, leveledDoc.Doc.Content)
+				contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, leveledDoc.Doc)
 			}
 		}
+		contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.SourceField, doc)
 
 		if len(contentsToAggregate) > 0 {
-			contentsToAggregate = append(contentsToAggregate, doc.Content)
-			doc.Content = strings.Join(contentsToAggregate, rule.Action.JoinSeparator)
+			if rule.Action.TargetField != "" {
+				if rule.Action.JoinSeparator == nil {
+					doc.MetaData[rule.Action.TargetField] = contentsToAggregate
+				} else {
+					doc.MetaData[rule.Action.TargetField] = join(contentsToAggregate, *rule.Action.JoinSeparator)
+				}
+			} else {
+				separator := "\t"
+				if rule.Action.JoinSeparator != nil {
+					separator = *rule.Action.JoinSeparator
+				}
+
+				// Append to content (original behavior)
+				doc.Content = join(contentsToAggregate, separator)
+			}
 		}
 	}
 
@@ -415,6 +451,18 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 	}
 
 	return
+}
+
+func appendFieldOrContent(contentsToAggregate []interface{}, sourceField string, doc *schema.Document) []interface{} {
+	if sourceField != "" {
+		// Extract from specific field
+		if fieldValue, ok := doc.MetaData[sourceField]; ok {
+			contentsToAggregate = append(contentsToAggregate, fieldValue)
+		}
+	} else {
+		contentsToAggregate = append(contentsToAggregate, doc.Content)
+	}
+	return contentsToAggregate
 }
 
 func (t *TransformerRules) applyCustomFunction(doc *schema.Document, rule *CustomTransform, docAsMap map[string]any) (err error) {
@@ -501,4 +549,12 @@ func toInt(v any) (i int, ok bool) {
 		}
 	}
 	return
+}
+
+func join(input []interface{}, separator string) string {
+	result := make([]string, len(input))
+	for i, v := range input {
+		result[i] = fmt.Sprintf("%v", v)
+	}
+	return strings.Join(result, separator)
 }

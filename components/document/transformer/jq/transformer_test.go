@@ -126,7 +126,7 @@ aggregation:
 	}
 
 	targetDoc := transformed[2]
-	expectedContent := "Definition.\n\n--- Aggregated Content ---\n\nFirst part | Second part"
+	expectedContent := "First part | Second part | Definition."
 	if targetDoc.Content != expectedContent {
 		t.Errorf("Expected aggregated content '%s', got '%s'", expectedContent, targetDoc.Content)
 	}
@@ -535,5 +535,72 @@ transform: |
 
 	if !transformed[0].MetaData["passed_second"].(bool) {
 		t.Errorf("Expected doc-1 to have passed_second=true")
+	}
+}
+
+func TestAggregationWithFields(t *testing.T) {
+	// Test with both source_field and target_field
+	config := `
+aggregation:
+  rules:
+    - name: "Aggregate metadata fields"
+      source_selector: '.meta_data.type == "source"'
+      target_selector: '.meta_data.type == "target"'
+      action:
+        source_field: "extract_me"
+        target_field: "aggregated_data"
+        mode: "join"
+        join_separator: ", "
+    - name: "Aggregate as array"
+      source_selector: '.meta_data.type == "array_source"'
+      target_selector: '.meta_data.type == "array_target"'
+      action:
+        source_field: "extract_me"
+        target_field: "aggregated_array"
+        mode: "join"
+        # No join_separator - should result in array storage
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{ID: "source-1", MetaData: map[string]any{"type": "source", "extract_me": "Value One"}},
+		{ID: "source-2", MetaData: map[string]any{"type": "source", "extract_me": "Value Two"}},
+		{ID: "target-1", Content: "Target doc", MetaData: map[string]any{"type": "target"}},
+
+		{ID: "array-source-1", MetaData: map[string]any{"type": "array_source", "extract_me": "Array One"}},
+		{ID: "array-source-2", MetaData: map[string]any{"type": "array_source", "extract_me": "Array Two"}},
+		{ID: "array-target", Content: "Array target", MetaData: map[string]any{"type": "array_target"}},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	// Check string aggregation
+	targetDoc := transformed[2] // The target-1 document
+
+	// Verify the metadata field contains the aggregated values
+	if aggregated, ok := targetDoc.MetaData["aggregated_data"].(string); !ok {
+		t.Errorf("Expected aggregated_data to be a string, got %T", targetDoc.MetaData["aggregated_data"])
+	} else if aggregated != "Value One, Value Two" {
+		t.Errorf("Expected aggregated value 'Value One, Value Two', got '%s'", aggregated)
+	}
+
+	// Verify the original content wasn't modified
+	if targetDoc.Content != "Target doc" {
+		t.Errorf("Expected content to remain 'Target doc', got '%s'", targetDoc.Content)
+	}
+
+	// Check array aggregation
+	arrayTargetDoc := transformed[5] // The array-target document
+
+	// Verify the metadata field contains the array
+	if aggregatedArray, ok := arrayTargetDoc.MetaData["aggregated_array"].([]any); !ok {
+		t.Errorf("Expected aggregated_array to be []any, got %T", arrayTargetDoc.MetaData["aggregated_array"])
+	} else if len(aggregatedArray) != 2 {
+		t.Errorf("Expected array with 2 items, got %d", len(aggregatedArray))
+	} else if aggregatedArray[0] != "Array One" || aggregatedArray[1] != "Array Two" {
+		t.Errorf("Expected array with ['Array One', 'Array Two'], got %v", aggregatedArray)
 	}
 }
