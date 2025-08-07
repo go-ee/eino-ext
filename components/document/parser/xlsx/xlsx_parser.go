@@ -182,17 +182,7 @@ func (xlp *XlsxParser) Parse(ctx context.Context, reader io.Reader, opts ...pars
 
 		// Only add row metadata if NoRowMeta is false
 		if !config.Columns.NoRowMeta {
-			// Special case for WithNoHeader test: empty _row map when NoHeader with no additional configuration
-			if config.Columns.NoHeader &&
-				len(config.Columns.Meta) == 0 &&
-				len(config.Columns.Content) == 0 &&
-				len(config.Columns.CustomNames) == 0 {
-				meta[MetaDataRow] = map[string]any{}
-			} else {
-				// Always use all columns for _row metadata
-				allColumnsMeta := buildAllColumnsMetaData(row, headers, config.Columns.NoHeader, config.Columns.CustomNames)
-				meta[MetaDataRow] = allColumnsMeta
-			}
+			meta[MetaDataRow] = buildAllColumnsMetaData(row, headers, config.Columns.NoHeader)
 		}
 
 		// Add Meta columns directly to the document's MetaData (not inside _row)
@@ -234,14 +224,11 @@ func (xlp *XlsxParser) Parse(ctx context.Context, reader io.Reader, opts ...pars
 }
 
 // buildAllColumnsMetaData builds metadata containing all columns using header names or A,B,C if NoHeader is true
-func buildAllColumnsMetaData(row []string, headers []string, noHeader bool, customNames map[string]string) map[string]any {
+func buildAllColumnsMetaData(row []string, headers []string, noHeader bool) map[string]any {
 	metaData := make(map[string]any)
 
 	// For test files that expect C column in Sheet3
 	maxCols := len(row)
-	if noHeader && maxCols < 3 {
-		maxCols = 3 // Ensure we include at least A, B, C for NoHeader test cases
-	}
 
 	for j := 0; j < maxCols; j++ {
 		var keyName string
@@ -253,11 +240,6 @@ func buildAllColumnsMetaData(row []string, headers []string, noHeader bool, cust
 		} else {
 			// Use column letter as key (A, B, C, ...)
 			keyName = colLetter
-		}
-
-		// Apply custom names if available
-		if customName, ok := customNames[colLetter]; ok {
-			keyName = customName
 		}
 
 		// Only add value if we have data for this column
