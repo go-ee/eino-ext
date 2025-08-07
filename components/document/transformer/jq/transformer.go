@@ -23,6 +23,12 @@ type implOptions struct {
 	Rules *TransformerRules
 }
 
+func WithRules(Rules *TransformerRules) document.TransformerOption {
+	return document.WrapTransformerImplSpecificOptFn(func(o *implOptions) {
+		o.Rules = Rules
+	})
+}
+
 // Transform is the main entry point called by the Eino framework.
 func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, opts ...document.TransformerOption) (documents []*schema.Document, err error) {
 	option := implOptions{}
