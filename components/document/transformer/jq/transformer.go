@@ -57,7 +57,7 @@ type AggregationAction struct {
 	Hierarchy *string `yaml:"hierarchy,omitempty" json:"hierarchy,omitempty"`
 }
 
-type AggregationRule struct {
+type Aggregation struct {
 	Name   string            `yaml:"name" json:"name"`
 	Source string            `yaml:"source" json:"source"`
 	Target string            `yaml:"target" json:"target"`
@@ -79,11 +79,9 @@ type CustomTransform struct {
 }
 
 type Config struct {
-	Transform   string `yaml:"transform" json:"transform"`
-	Filter      string `yaml:"filter" json:"filter"`
-	Aggregation struct {
-		Rules []AggregationRule `yaml:"rules" json:"rules"`
-	} `yaml:"aggregation" json:"aggregation"`
+	Transform        string            `yaml:"transform" json:"transform"`
+	Filter           string            `yaml:"filter" json:"filter"`
+	Aggregations     []Aggregation     `yaml:"aggregations" json:"aggregations"`
 	CustomTransforms []CustomTransform `yaml:"custom_transforms" json:"custom_transforms"`
 }
 
@@ -93,7 +91,7 @@ type Config struct {
 type ConfigRules struct {
 	transformQuery   *gojq.Query
 	filterQuery      *gojq.Query
-	aggregationRules []AggregationRule
+	aggregations     []Aggregation
 	customTransforms []CustomTransform
 }
 
@@ -121,7 +119,7 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 
 	for _, cfg := range cfgs {
 		configRule := &ConfigRules{
-			aggregationRules: cfg.Aggregation.Rules,
+			aggregations:     cfg.Aggregations,
 			customTransforms: cfg.CustomTransforms,
 		}
 
@@ -142,8 +140,8 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 		}
 
 		// Parse aggregation rules
-		for i := range configRule.aggregationRules {
-			rule := &configRule.aggregationRules[i]
+		for i := range configRule.aggregations {
+			rule := &configRule.aggregations[i]
 			if rule.sourceQuery, err = gojq.Parse(rule.Source); err != nil {
 				err = fmt.Errorf("failed to parse source selector for rule '%s': %w", rule.Name, err)
 				return
@@ -226,8 +224,8 @@ func (t *TransformerRules) applyConfigRules(_ context.Context, rules *ConfigRule
 		}
 
 		// Apply aggregation rules
-		for i := range rules.aggregationRules {
-			rule := &rules.aggregationRules[i]
+		for i := range rules.aggregations {
+			rule := &rules.aggregations[i]
 
 			if rule.Action.Hierarchy != nil {
 				if err = t.handleHierarchicalAggregation(doc, docAsMap, rule, hierarchicalBuffers); err != nil {
@@ -311,7 +309,7 @@ func updateDocFromMap(doc *schema.Document, transformedMap map[string]any) {
 }
 
 // Aggregation handling functions
-func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string][]*schema.Document) (err error) {
+func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap map[string]any, rule *Aggregation, buffers map[string][]*schema.Document) (err error) {
 	// Check if document is a target for aggregation
 	var isTarget bool
 	if isTarget, err = runBoolQuery(rule.targetQuery, docAsMap); err != nil {
@@ -350,7 +348,7 @@ func (t *TransformerRules) handleJoinAggregation(doc *schema.Document, docAsMap 
 	return
 }
 
-func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, docAsMap map[string]any, rule *AggregationRule, buffers map[string][]*LeveledDocument) (err error) {
+func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, docAsMap map[string]any, rule *Aggregation, buffers map[string][]*LeveledDocument) (err error) {
 	// Check if document is a target for aggregation
 	var isTarget bool
 	if isTarget, err = runBoolQuery(rule.targetQuery, docAsMap); err != nil {
@@ -363,7 +361,7 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 		buffer := buffers[rule.Name]
 		if len(buffer) > 0 {
 			var targetLevel int
-			if targetLevel, err = getLevelValue(doc, *rule.Action.Hierarchy); err != nil {
+			if targetLevel, err = getHierarchyValue(doc, *rule.Action.Hierarchy); err != nil {
 				return
 			}
 
@@ -392,7 +390,7 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 
 	if isSource {
 		var sourceLevel int
-		if sourceLevel, err = getLevelValue(doc, *rule.Action.Hierarchy); err != nil {
+		if sourceLevel, err = getHierarchyValue(doc, *rule.Action.Hierarchy); err != nil {
 			return
 		}
 
@@ -421,16 +419,16 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 }
 
 // Helper function to get level value from document
-func getLevelValue(doc *schema.Document, levelField string) (level int, err error) {
-	levelVal, ok := doc.MetaData[levelField]
+func getHierarchyValue(doc *schema.Document, hierarchyField string) (level int, err error) {
+	hierarchy, ok := doc.MetaData[hierarchyField]
 	if !ok {
-		err = fmt.Errorf("doc %s missing level_field '%s'", doc.ID, levelField)
+		err = fmt.Errorf("doc %s missing hierarchy field '%s'", doc.ID, hierarchyField)
 		return
 	}
 
 	var isInt bool
-	if level, isInt = toInt(levelVal); !isInt {
-		err = fmt.Errorf("level_field for doc %s is not a valid integer", doc.ID)
+	if level, isInt = toInt(hierarchy); !isInt {
+		err = fmt.Errorf("hierarchy field for doc %s is not a valid integer", doc.ID)
 		return
 	}
 
