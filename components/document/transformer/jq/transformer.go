@@ -441,14 +441,14 @@ func applyAggregatedContent(doc *schema.Document, action AggregationAction, cont
 		if action.Join == nil {
 			doc.MetaData[action.Target] = contents
 		} else {
-			doc.MetaData[action.Target] = join(contents, *action.Join)
+			doc.MetaData[action.Target] = JoinToStr(contents, *action.Join)
 		}
 	} else {
 		separator := "\t"
 		if action.Join != nil {
 			separator = *action.Join
 		}
-		doc.Content = join(contents, separator)
+		doc.Content = JoinToStr(contents, separator)
 	}
 }
 
@@ -530,11 +530,21 @@ func toInt(v any) (i int, ok bool) {
 	return
 }
 
-func join(input []interface{}, separator string) (result string) {
+func JoinToStr(input []interface{}, separator string) (result string) {
 	strs := make([]string, len(input))
 	for i, v := range input {
-		strs[i] = fmt.Sprintf("%v", v)
+		strs[i] = ToStr(v)
 	}
 	result = strings.Join(strs, separator)
+	return
+}
+
+func ToStr(input interface{}) (ret string) {
+	switch val := input.(type) {
+	case string:
+		ret = val
+	default:
+		ret = fmt.Sprintf("%v", input)
+	}
 	return
 }
