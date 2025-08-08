@@ -632,3 +632,98 @@ aggregations:
 		t.Errorf("Expected array with ['Array One', 'Array Two'], got %v", aggregatedArray)
 	}
 }
+
+func TestJqStringMapping(t *testing.T) {
+	config := `
+transform: |
+  # Define mapping of country codes to country names
+  .meta_data.country_name = (
+    if .meta_data.country_code then
+      .meta_data.country_code | {
+        "US": "United States",
+        "UK": "United Kingdom",
+        "DE": "Germany",
+        "FR": "France",
+        "JP": "Japan",
+        "CN": "China",
+        "AU": "Australia"
+      }[.] // "Unknown Country"  # Default value if not found
+    else
+      null
+    end
+  )
+  
+  # Another example: map categories to departments
+  | .meta_data.department = (
+    if .meta_data.category then
+      .meta_data.category | {
+        "books": "Literature",
+        "electronics": "Technology",
+        "clothing": "Fashion",
+        "food": "Grocery",
+        "toys": "Children"
+      }[.] // .  # Keep original if not mapped (using the current value as fallback)
+    else
+      null
+    end
+  )
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{
+			ID: "doc-1",
+			MetaData: map[string]any{
+				"country_code": "US",
+				"category":     "books",
+			},
+		},
+		{
+			ID: "doc-2",
+			MetaData: map[string]any{
+				"country_code": "DE",
+				"category":     "electronics",
+			},
+		},
+		{
+			ID: "doc-3",
+			MetaData: map[string]any{
+				"country_code": "XYZ",              // Not in mapping
+				"category":     "unknown_category", // Not in mapping
+			},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	if len(transformed) != 3 {
+		t.Fatalf("Expected 3 documents, got %d", len(transformed))
+	}
+
+	// Check first document
+	if countryName, ok := transformed[0].MetaData["country_name"].(string); !ok || countryName != "United States" {
+		t.Errorf("Expected country_name to be 'United States', got %v", transformed[0].MetaData["country_name"])
+	}
+	if department, ok := transformed[0].MetaData["department"].(string); !ok || department != "Literature" {
+		t.Errorf("Expected department to be 'Literature', got %v", transformed[0].MetaData["department"])
+	}
+
+	// Check second document
+	if countryName, ok := transformed[1].MetaData["country_name"].(string); !ok || countryName != "Germany" {
+		t.Errorf("Expected country_name to be 'Germany', got %v", transformed[1].MetaData["country_name"])
+	}
+	if department, ok := transformed[1].MetaData["department"].(string); !ok || department != "Technology" {
+		t.Errorf("Expected department to be 'Technology', got %v", transformed[1].MetaData["department"])
+	}
+
+	// Check third document with unknown values
+	if countryName, ok := transformed[2].MetaData["country_name"].(string); !ok || countryName != "Unknown Country" {
+		t.Errorf("Expected country_name to be 'Unknown Country', got %v", transformed[2].MetaData["country_name"])
+	}
+	if department, ok := transformed[2].MetaData["department"].(string); !ok || department != "unknown_category" {
+		t.Errorf("Expected department to be 'unknown_category', got %v", transformed[2].MetaData["department"])
+	}
+}
