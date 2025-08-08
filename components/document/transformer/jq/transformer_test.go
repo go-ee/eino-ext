@@ -191,7 +191,7 @@ aggregations:
 
 	targetDoc := transformed[4]
 	// Expects aggregation in reverse order of levels: 2 then 1. Level 4 is ignored.
-	expectedContent := []string{"Level 1", "Level 2 NEW", "Target"}
+	expectedContent := []interface{}{"Level 1", "Level 2 NEW", "Target"}
 	if !reflect.DeepEqual(targetDoc.MetaData["contents"], expectedContent) {
 		t.Errorf("Expected hierarchical content '%v', got '%v'", expectedContent, targetDoc.MetaData["contents"])
 	}
