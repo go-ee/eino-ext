@@ -103,14 +103,12 @@ transform: |
 
 func TestJoinAggregation(t *testing.T) {
 	config := `
-aggregation:
-  rules:
-    - name: "Aggregate simple prose"
-      source: '.meta_data.type == "prose"'
-      target: '.meta_data.type == "def"'
-      action:
-        mode: "join"
-        join: " | "
+aggregations:  
+  - name: "Aggregate simple prose"
+    source: '.meta_data.type == "prose"'
+    target: '.meta_data.type == "def"'
+    action:
+      join: " | "
 `
 	rules := newTestTransformer(t, config, nil)
 
@@ -134,14 +132,13 @@ aggregation:
 
 func TestHierarchicalAggregation(t *testing.T) {
 	config := `
-aggregation:
-  rules:
-    - name: "Aggregate hierarchical"
-      source: '.meta_data.level != null'
-      target: '.meta_data.type == "def"'
-      action:
-        hierarchy: "level"
-        join: "\n"
+aggregations:
+- name: "Aggregate hierarchical"
+  source: '.meta_data.level != null'
+  target: '.meta_data.type == "def"'
+  action:
+    hierarchy: "level"
+    join: "\n"
 `
 	rules := newTestTransformer(t, config, nil)
 
@@ -540,23 +537,22 @@ transform: |
 func TestAggregationWithFields(t *testing.T) {
 	// Test with both source and target
 	config := `
-aggregation:
-  rules:
-    - name: "Aggregate metadata fields"
-      source: '.meta_data.type == "source"'
-      target: '.meta_data.type == "target"'
-      action:
-        source: "extract_me"
-        target: "aggregated_data"
-        join: ", "
-    - name: "Aggregate as array"
-      source: '.meta_data.type == "array_source"'
-      target: '.meta_data.type == "array_target"'
-      action:
-        source: "extract_me"
-        target: "aggregated_array"
-        mode: "join"
-        # No join - should result in array storage
+aggregations:
+- name: "Aggregate metadata fields"
+  source: '.meta_data.type == "source"'
+  target: '.meta_data.type == "target"'
+  action:
+    source: "extract_me"
+    target: "aggregated_data"
+    join: ", "
+- name: "Aggregate as array"
+  source: '.meta_data.type == "array_source"'
+  target: '.meta_data.type == "array_target"' 
+  action:
+    source: "extract_me"
+    target: "aggregated_array"
+    mode: "join"
+    # No join - should result in array storage
 `
 	rules := newTestTransformer(t, config, nil)
 
