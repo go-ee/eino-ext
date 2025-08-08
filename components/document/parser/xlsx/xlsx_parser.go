@@ -97,11 +97,9 @@ func columnLetterToIndex(letter string) int {
 func (xlp *XlsxParser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Option) ([]*schema.Document, error) {
 
 	// Extract implementation-specific options
-	implOpts := implOptions{}
-	parser.GetImplSpecificOptions(&implOpts, opts...)
+	config := parser.GetImplSpecificOptions(&implOptions{}, opts...).Config
 
 	// Use config from options if provided, otherwise use default from parser instance
-	config := implOpts.Config
 	if config == nil {
 		config = xlp.Config
 	}
