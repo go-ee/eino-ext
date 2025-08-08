@@ -905,3 +905,103 @@ transform: |
 		t.Errorf("Expected products_with_tax to be nil, got %v", transformed[1].MetaData["products_with_tax"])
 	}
 }
+
+func TestJqCaseInsensitiveMapping(t *testing.T) {
+	config := `
+transform: |
+  # Case-insensitive mapping by converting both keys and lookup value to lowercase
+  .meta_data.normalized_category = (
+    if .meta_data.category then
+      # Convert input to lowercase for case-insensitive comparison
+      (.meta_data.category | ascii_downcase) as $lookup |
+      # Define mapping with lowercase keys
+      {
+        "electronics": "Technology Department",
+        "books": "Literature Department",
+        "clothing": "Fashion Department",
+        "food": "Grocery Department"
+      }[$lookup] // (.meta_data.category + " Department")  # Default adds "Department" suffix
+    else
+      null
+    end
+  )
+  
+  # Alternative: Case-insensitive lookup with preserved original values in result
+  | .meta_data.country_name = (
+    if .meta_data.country_code then
+      # Store original for later use
+      .meta_data.country_code as $original |
+      # Convert to lowercase for lookup
+      (.meta_data.country_code | ascii_downcase) as $lookup |
+      # Lookup table maps lowercase keys to proper case values
+      {
+        "us": "United States",
+        "uk": "United Kingdom",
+        "de": "Germany",
+        "fr": "France", 
+        "jp": "Japan"
+      }[$lookup] // ("Unknown: " + $original)  # Default preserves original case
+    else
+      null
+    end
+  )
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{
+			ID: "doc-1",
+			MetaData: map[string]any{
+				"country_code": "US",    // Uppercase
+				"category":     "Books", // Title case
+			},
+		},
+		{
+			ID: "doc-2",
+			MetaData: map[string]any{
+				"country_code": "fr",       // Lowercase
+				"category":     "CLOTHING", // All caps
+			},
+		},
+		{
+			ID: "doc-3",
+			MetaData: map[string]any{
+				"country_code": "MX",                 // Not in mapping
+				"category":     "Electronics Repair", // Not exact match
+			},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	if len(transformed) != 3 {
+		t.Fatalf("Expected 3 documents, got %d", len(transformed))
+	}
+
+	// Check first document - sent "US" and "Books"
+	if countryName, ok := transformed[0].MetaData["country_name"].(string); !ok || countryName != "United States" {
+		t.Errorf("Expected country_name to be 'United States', got %v", transformed[0].MetaData["country_name"])
+	}
+	if category, ok := transformed[0].MetaData["normalized_category"].(string); !ok || category != "Literature Department" {
+		t.Errorf("Expected normalized_category to be 'Literature Department', got %v", transformed[0].MetaData["normalized_category"])
+	}
+
+	// Check second document - sent "fr" and "CLOTHING"
+	if countryName, ok := transformed[1].MetaData["country_name"].(string); !ok || countryName != "France" {
+		t.Errorf("Expected country_name to be 'France', got %v", transformed[1].MetaData["country_name"])
+	}
+	if category, ok := transformed[1].MetaData["normalized_category"].(string); !ok || category != "Fashion Department" {
+		t.Errorf("Expected normalized_category to be 'Fashion Department', got %v", transformed[1].MetaData["normalized_category"])
+	}
+
+	// Check third document - with values not in mapping
+	if countryName, ok := transformed[2].MetaData["country_name"].(string); !ok || countryName != "Unknown: MX" {
+		t.Errorf("Expected country_name to be 'Unknown: MX', got %v", transformed[2].MetaData["country_name"])
+	}
+	if category, ok := transformed[2].MetaData["normalized_category"].(string); !ok || category != "Electronics Repair Department" {
+		t.Errorf("Expected normalized_category to be 'Electronics Repair Department', got %v", transformed[2].MetaData["normalized_category"])
+	}
+}
