@@ -727,3 +727,181 @@ transform: |
 		t.Errorf("Expected department to be 'unknown_category', got %v", transformed[2].MetaData["department"])
 	}
 }
+
+func TestJqArrayMapping(t *testing.T) {
+	config := `
+transform: |
+  # 1. Map simple string array - capitalize each item
+  .meta_data.tags_upper = (
+    if .meta_data.tags_array then
+      [.meta_data.tags_array[] | ascii_upcase]
+    else
+      null
+    end
+  )
+  
+  # 2. Transform object array - add attributes to each object
+  | .meta_data.products_with_tax = (
+    if .meta_data.products then
+      [.meta_data.products[] | {
+        name: .name,
+        price: .price,
+        tax: (.price * 0.1),
+        total: (.price * 1.1)
+      }]
+    else
+      null
+    end
+  )
+  
+  # 3. Selective mapping - only map items matching a condition
+  | .meta_data.expensive_products = (
+    if .meta_data.products then
+      [.meta_data.products[] | select(.price > 50) | .name]
+    else
+      null
+    end
+  )
+  
+  # 4. Transform array with index - add position to each item
+  | .meta_data.indexed_tags = (
+    if .meta_data.tags_array then
+      [range(0; (.meta_data.tags_array | length)) as $i | {
+        index: $i,
+        value: .meta_data.tags_array[$i],
+        position: ($i + 1)
+      }]
+    else
+      null
+    end
+  )
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{
+			ID: "doc-1",
+			MetaData: map[string]any{
+				"tags_array": []any{"technology", "science", "programming"},
+				"products": []any{
+					map[string]any{"name": "Laptop", "price": 1200.0},
+					map[string]any{"name": "Mouse", "price": 25.0},
+					map[string]any{"name": "Monitor", "price": 300.0},
+				},
+			},
+		},
+		{
+			ID: "doc-2",
+			MetaData: map[string]any{
+				"tags_array": []any{"art", "design"},
+				// No products
+			},
+		},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	if len(transformed) != 2 {
+		t.Fatalf("Expected 2 documents, got %d", len(transformed))
+	}
+
+	// Check string array capitalization
+	tagsUpper, ok := transformed[0].MetaData["tags_upper"].([]any)
+	if !ok {
+		t.Errorf("Expected tags_upper to be []any, got %T", transformed[0].MetaData["tags_upper"])
+	} else if len(tagsUpper) != 3 || tagsUpper[0] != "TECHNOLOGY" || tagsUpper[1] != "SCIENCE" || tagsUpper[2] != "PROGRAMMING" {
+		t.Errorf("Expected uppercase tags, got %v", tagsUpper)
+	}
+
+	// Check object array transformation
+	products, ok := transformed[0].MetaData["products_with_tax"].([]any)
+	if !ok {
+		t.Errorf("Expected products_with_tax to be []any, got %T", transformed[0].MetaData["products_with_tax"])
+	} else {
+		// Check first product
+		product, ok := products[0].(map[string]any)
+		if !ok {
+			t.Errorf("Expected product to be map[string]any, got %T", products[0])
+		} else {
+			if product["name"] != "Laptop" {
+				t.Errorf("Expected product name 'Laptop', got %v", product["name"])
+			}
+			if price, ok := product["price"].(float64); !ok || price != 1200.0 {
+				t.Errorf("Expected product price 1200.0 (float64), got %v (%T)", product["price"], product["price"])
+			}
+			if tax, ok := product["tax"].(float64); !ok || tax != 120.0 {
+				t.Errorf("Expected product tax 120.0 (float64), got %v (%T)", product["tax"], product["tax"])
+			}
+			if total, ok := product["total"].(float64); !ok || total != 1320.0 {
+				t.Errorf("Expected product total 1320.0 (float64), got %v (%T)", product["total"], product["total"])
+			}
+		}
+	}
+
+	// Check filtered array
+	expensiveProducts, ok := transformed[0].MetaData["expensive_products"].([]any)
+	if !ok {
+		t.Errorf("Expected expensive_products to be []any, got %T", transformed[0].MetaData["expensive_products"])
+	} else if len(expensiveProducts) != 2 || expensiveProducts[0] != "Laptop" || expensiveProducts[1] != "Monitor" {
+		t.Errorf("Expected expensive products to be [Laptop Monitor], got %v", expensiveProducts)
+	}
+
+	// Check indexed array
+	indexedTags, ok := transformed[0].MetaData["indexed_tags"].([]any)
+	if !ok {
+		t.Errorf("Expected indexed_tags to be []any, got %T", transformed[0].MetaData["indexed_tags"])
+	} else if len(indexedTags) != 3 {
+		t.Errorf("Expected 3 indexed tags, got %d", len(indexedTags))
+	} else {
+		firstTag, ok := indexedTags[0].(map[string]any)
+		if !ok {
+			t.Errorf("Expected indexed tag to be map[string]any, got %T", indexedTags[0])
+		} else {
+			// Accept either int or float64 for index
+			if idx, ok := firstTag["index"].(int); ok {
+				if idx != 0 {
+					t.Errorf("Expected index 0, got %v", idx)
+				}
+			} else if idx, ok := firstTag["index"].(float64); ok {
+				if idx != 0.0 {
+					t.Errorf("Expected index 0.0, got %v", idx)
+				}
+			} else {
+				t.Errorf("Expected index to be int or float64, got %T", firstTag["index"])
+			}
+
+			if firstTag["value"] != "technology" {
+				t.Errorf("Expected value 'technology', got %v", firstTag["value"])
+			}
+
+			// Accept either int or float64 for position
+			if pos, ok := firstTag["position"].(int); ok {
+				if pos != 1 {
+					t.Errorf("Expected position 1, got %v", pos)
+				}
+			} else if pos, ok := firstTag["position"].(float64); ok {
+				if pos != 1.0 {
+					t.Errorf("Expected position 1.0, got %v", pos)
+				}
+			} else {
+				t.Errorf("Expected position to be int or float64, got %T", firstTag["position"])
+			}
+		}
+	}
+
+	// Check second document with fewer fields
+	tagsUpper2, ok := transformed[1].MetaData["tags_upper"].([]any)
+	if !ok {
+		t.Errorf("Expected tags_upper to be []any, got %T", transformed[1].MetaData["tags_upper"])
+	} else if len(tagsUpper2) != 2 || tagsUpper2[0] != "ART" || tagsUpper2[1] != "DESIGN" {
+		t.Errorf("Expected uppercase tags [ART DESIGN], got %v", tagsUpper2)
+	}
+
+	// Products field should be null for second document
+	if transformed[1].MetaData["products_with_tax"] != nil {
+		t.Errorf("Expected products_with_tax to be nil, got %v", transformed[1].MetaData["products_with_tax"])
+	}
+}
