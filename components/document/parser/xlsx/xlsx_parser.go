@@ -28,8 +28,8 @@ import (
 )
 
 const (
-	MetaDataRow = "_row"
-	// MetaDataExt constant removed - extra metadata now added directly to Doc.MetaData
+	MetaDataRow   = "_row"
+	MetaDataRowNr = "_row_nr"
 )
 
 // XlsxParser Custom parser for parsing Xlsx file content
@@ -95,7 +95,6 @@ func columnLetterToIndex(letter string) int {
 
 // Parse parses the XLSX content from io.Reader.
 func (xlp *XlsxParser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Option) ([]*schema.Document, error) {
-	option := parser.GetCommonOptions(&parser.Options{}, opts...)
 
 	// Extract implementation-specific options
 	implOpts := implOptions{}
@@ -203,16 +202,12 @@ func (xlp *XlsxParser) Parse(ctx context.Context, reader io.Reader, opts ...pars
 			}
 		}
 
-		// Add the ExtraMeta directly to the document's metadata
-		if option.ExtraMeta != nil {
-			for k, v := range option.ExtraMeta {
-				meta[k] = v
-			}
-		}
+		nr := i + 1
+		meta[MetaDataRowNr] = nr
 
 		// Create New Document
 		nDoc := &schema.Document{
-			ID:       generateID(config, i),
+			ID:       generateID(config, nr),
 			Content:  content,
 			MetaData: meta,
 		}

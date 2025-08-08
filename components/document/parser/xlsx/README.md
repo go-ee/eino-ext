@@ -39,8 +39,6 @@ The XLSX parser generates metadata with the following structure:
 
 2. Columns specified in `Meta` are also added directly to the root metadata level for easy access
 
-3. `_ext`: Additional metadata injected via parsing options
-
 ## Example of use
 - Refer to xlsx_parser_test.go in the current directory, where the test data is in ./examples/testdata/
     - TestXlsxParser_Default: The default configuration uses the first worksheet with the first row as the header
