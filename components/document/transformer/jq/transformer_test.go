@@ -3,6 +3,7 @@ package jq
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -160,6 +161,39 @@ aggregations:
 	expectedContent := "Level 1\nLevel 2 NEW\nTarget"
 	if targetDoc.Content != expectedContent {
 		t.Errorf("Expected hierarchical content '%s', got '%s'", expectedContent, targetDoc.Content)
+	}
+}
+
+func TestHierarchicalAggregationToField(t *testing.T) {
+	config := `
+aggregations:
+- name: "Aggregate hierarchical"
+  source: '.meta_data.level != null'
+  target: '.meta_data.type == "def"'
+  action:
+    hierarchy: "level"
+    target: "contents"
+`
+	rules := newTestTransformer(t, config, nil)
+
+	docs := []*schema.Document{
+		{ID: "L1", Content: "Level 1", MetaData: map[string]any{"level": 1}},
+		{ID: "L2-v1", Content: "Level 2 OLD", MetaData: map[string]any{"level": 2}},
+		{ID: "L2-v2", Content: "Level 2 NEW", MetaData: map[string]any{"level": 2}}, // Should overwrite L2-v1
+		{ID: "L4", Content: "Level 4", MetaData: map[string]any{"level": 4}},        // Should be skipped
+		{ID: "DEF", Content: "Target", MetaData: map[string]any{"type": "def", "level": 3}},
+	}
+
+	transformed, err := rules.Transform(context.Background(), docs)
+	if err != nil {
+		t.Fatalf("Transform failed: %v", err)
+	}
+
+	targetDoc := transformed[4]
+	// Expects aggregation in reverse order of levels: 2 then 1. Level 4 is ignored.
+	expectedContent := []string{"Level 1", "Level 2 NEW", "Target"}
+	if !reflect.DeepEqual(targetDoc.MetaData["contents"], expectedContent) {
+		t.Errorf("Expected hierarchical content '%v', got '%v'", expectedContent, targetDoc.MetaData["contents"])
 	}
 }
 
