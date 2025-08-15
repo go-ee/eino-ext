@@ -365,10 +365,10 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 				return
 			}
 
-			// Collect content from documents with levels < targetLevel
+			// Collect content from documents with levels <= targetLevel
 			contentsToAggregate := []interface{}{}
 			for _, leveledDoc := range buffer {
-				if leveledDoc.Level < targetLevel {
+				if leveledDoc.Level <= targetLevel {
 					contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.Source, leveledDoc.Doc)
 				}
 			}
@@ -400,15 +400,30 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 			Doc:   doc,
 		}
 
-		// Find where to insert the new document to maintain order
 		currentBuffer := buffers[rule.Name]
-		for i, existing := range currentBuffer {
-			if existing.Level >= sourceLevel {
-				// Cut all existing documents after this point
-				currentBuffer = currentBuffer[:i]
-				break
+
+		// Check if we need to reset buffer because of level decrease
+		if len(currentBuffer) > 0 {
+			lastDoc := currentBuffer[len(currentBuffer)-1]
+			if sourceLevel < lastDoc.Level {
+				// If the new doc has a lower level than the last document,
+				// find where to truncate the buffer
+				truncateIndex := -1
+				for i, existing := range currentBuffer {
+					if existing.Level == sourceLevel {
+						truncateIndex = i
+						break
+					}
+				}
+
+				if truncateIndex >= 0 {
+					// Replace the first document with this level and remove all after it
+					currentBuffer = currentBuffer[:truncateIndex]
+				}
 			}
 		}
+
+		// Add the new document to the buffer
 		currentBuffer = append(currentBuffer, leveledDoc)
 
 		// Update the buffer
@@ -427,7 +442,7 @@ func getHierarchyValue(doc *schema.Document, hierarchyField string) (level int, 
 	}
 
 	var isInt bool
-	if level, isInt = toInt(hierarchy); !isInt {
+	if level, isInt = ToInt(hierarchy); !isInt {
 		err = fmt.Errorf("hierarchy field for doc %s is not a valid integer", doc.ID)
 		return
 	}
@@ -512,11 +527,15 @@ func docToMap(doc *schema.Document) (result map[string]any) {
 	return
 }
 
-func toInt(v any) (i int, ok bool) {
+func ToInt(v any) (i int, ok bool) {
 	switch val := v.(type) {
 	case int:
 		i, ok = val, true
+	case int32:
+		i, ok = int(val), true
 	case int64:
+		i, ok = int(val), true
+	case float32:
 		i, ok = int(val), true
 	case float64:
 		i, ok = int(val), true
