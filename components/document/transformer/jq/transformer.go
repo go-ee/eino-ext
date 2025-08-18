@@ -51,10 +51,13 @@ func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, op
 
 // --- Configuration Structs with JSON annotations ---
 type AggregationAction struct {
-	Source    string  `yaml:"source" json:"source"`
-	Target    string  `yaml:"target" json:"target"`
-	Join      *string `yaml:"join,omitempty" json:"join,omitempty"`
-	Hierarchy *string `yaml:"hierarchy,omitempty" json:"hierarchy,omitempty"`
+	Source         string  `yaml:"source" json:"source"`
+	Target         string  `yaml:"target" json:"target"`
+	Join           *string `yaml:"join,omitempty" json:"join,omitempty"`
+	Hierarchy      *string `yaml:"hierarchy,omitempty" json:"hierarchy,omitempty"`
+	HierarchyUntil *int    `yaml:"hierarchy_until,omitempty" json:"hierarchy_until,omitempty"`
+	HierarchySkip  []int   `yaml:"hierarchy_skip,omitempty" json:"hierarchy_skip,omitempty"`
+	LevelPrefix    *string `yaml:"level_prefix,omitempty" json:"level_prefix,omitempty"`
 }
 
 type Aggregation struct {
@@ -365,18 +368,84 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 				return
 			}
 
-			// Collect content from documents with levels <= targetLevel
-			contentsToAggregate := []interface{}{}
+			// Group documents by level
+			docsByLevel := make(map[int][]*LeveledDocument)
 			for _, leveledDoc := range buffer {
-				if leveledDoc.Level <= targetLevel {
-					contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.Source, leveledDoc.Doc)
+				// Only consider levels below the target
+				if leveledDoc.Level < targetLevel {
+					// Skip levels specified in HierarchySkip
+					skipLevel := false
+					if rule.Action.HierarchySkip != nil {
+						for _, skip := range rule.Action.HierarchySkip {
+							if leveledDoc.Level == skip {
+								skipLevel = true
+								break
+							}
+						}
+					}
+
+					// Skip levels below HierarchyUntil if specified
+					if !skipLevel && (rule.Action.HierarchyUntil == nil || leveledDoc.Level >= *rule.Action.HierarchyUntil) {
+						// Add document to its level group
+						docsByLevel[leveledDoc.Level] = append(docsByLevel[leveledDoc.Level], leveledDoc)
+					}
 				}
 			}
-			contentsToAggregate = appendFieldOrContent(contentsToAggregate, rule.Action.Source, doc)
+
+			// Build aggregation from each level
+			contentsToAggregate := []interface{}{}
+
+			// Define join separator once
+			joinSeparator := "\t"
+			if rule.Action.Join != nil {
+				joinSeparator = *rule.Action.Join
+			}
+
+			for level := 1; level < targetLevel; level++ {
+				if leveledDocs, exists := docsByLevel[level]; exists && len(leveledDocs) > 0 {
+					// Collect all contents from this level
+					levelContents := []interface{}{}
+					for _, leveledDoc := range leveledDocs {
+						levelContents = appendFieldOrContent(levelContents, rule.Action.Source, leveledDoc.Doc)
+					}
+
+					// Join contents from the same level
+					levelContent := JoinToStr(levelContents, joinSeparator)
+
+					// Add level prefix if configured
+					if rule.Action.LevelPrefix != nil {
+						levelContent = fmt.Sprintf("%s %d: %s", *rule.Action.LevelPrefix, level, levelContent)
+					}
+
+					contentsToAggregate = append(contentsToAggregate, levelContent)
+				}
+			}
+
+			// Add the target document's content
+			targetContents := appendFieldOrContent([]interface{}{}, rule.Action.Source, doc)
+			if len(targetContents) > 0 {
+				targetContent := ToStr(targetContents[0])
+
+				// Add level prefix if configured
+				if rule.Action.LevelPrefix != nil {
+					targetContent = fmt.Sprintf("%s %d: %s", *rule.Action.LevelPrefix, targetLevel, targetContent)
+				}
+
+				contentsToAggregate = append(contentsToAggregate, targetContent)
+			}
 
 			// Apply aggregated content if there's anything to aggregate
 			if len(contentsToAggregate) > 0 {
-				applyAggregatedContent(doc, rule.Action, contentsToAggregate)
+				// Use the same field/content application logic but with simplified handling
+				if rule.Action.Target != "" {
+					if rule.Action.Join == nil {
+						doc.MetaData[rule.Action.Target] = contentsToAggregate
+					} else {
+						doc.MetaData[rule.Action.Target] = JoinToStr(contentsToAggregate, *rule.Action.Join)
+					}
+				} else {
+					doc.Content = JoinToStr(contentsToAggregate, joinSeparator)
+				}
 			}
 		}
 	}
@@ -400,34 +469,8 @@ func (t *TransformerRules) handleHierarchicalAggregation(doc *schema.Document, d
 			Doc:   doc,
 		}
 
-		currentBuffer := buffers[rule.Name]
-
-		// Check if we need to reset buffer because of level decrease
-		if len(currentBuffer) > 0 {
-			lastDoc := currentBuffer[len(currentBuffer)-1]
-			if sourceLevel < lastDoc.Level {
-				// If the new doc has a lower level than the last document,
-				// find where to truncate the buffer
-				truncateIndex := -1
-				for i, existing := range currentBuffer {
-					if existing.Level == sourceLevel {
-						truncateIndex = i
-						break
-					}
-				}
-
-				if truncateIndex >= 0 {
-					// Replace the first document with this level and remove all after it
-					currentBuffer = currentBuffer[:truncateIndex]
-				}
-			}
-		}
-
-		// Add the new document to the buffer
-		currentBuffer = append(currentBuffer, leveledDoc)
-
-		// Update the buffer
-		buffers[rule.Name] = currentBuffer
+		// Append to the buffer for this rule
+		buffers[rule.Name] = append(buffers[rule.Name], leveledDoc)
 	}
 
 	return
