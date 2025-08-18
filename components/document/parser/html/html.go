@@ -18,6 +18,7 @@ package html
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 
@@ -43,18 +44,30 @@ type Config struct {
 	Selector *string
 }
 
+// implOptions is used to extract the config from the generic parser.Option
+type implOptions struct {
+	Config *Config
+}
+
+// WithConfig specifies the xlsx parser config
+func WithConfig(config *Config) parser.Option {
+	return parser.WrapImplSpecificOptFn(func(o *implOptions) {
+		o.Config = config
+	})
+}
+
 var (
 	BodySelector = "body"
 )
 
 // NewParser returns a new parser.
-func NewParser(ctx context.Context, conf *Config) (*Parser, error) {
+func NewParser(ctx context.Context, conf *Config) (parser *Parser, err error) {
 	if conf == nil {
 		conf = &Config{}
 	}
 
 	return &Parser{
-		conf: conf,
+		Config: conf,
 	}, nil
 }
 
@@ -62,10 +75,23 @@ func NewParser(ctx context.Context, conf *Config) (*Parser, error) {
 // use goquery to parse the HTML content, will read the <body> content as text (remove tags).
 // will extract title/description/language/charset from the HTML content as meta data.
 type Parser struct {
-	conf *Config
+	Config *Config
 }
 
 func (p *Parser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Option) ([]*schema.Document, error) {
+	// Extract implementation-specific options
+	config := parser.GetImplSpecificOptions(&implOptions{}, opts...).Config
+
+	// Use config from options if provided, otherwise use default from parser instance
+	if config == nil {
+		config = p.Config
+	}
+
+	// Return error if no config is available
+	if config == nil {
+		return nil, fmt.Errorf("xlsx parser config not provided in options and no default config available")
+	}
+
 	doc, err := goquery.NewDocumentFromReader(reader)
 	if err != nil {
 		return nil, err
@@ -75,8 +101,8 @@ func (p *Parser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Opt
 
 	var contentSel *goquery.Selection
 
-	if p.conf.Selector != nil {
-		contentSel = doc.Find(*p.conf.Selector).Contents()
+	if p.Config.Selector != nil {
+		contentSel = doc.Find(*p.Config.Selector).Contents()
 	} else {
 		contentSel = doc.Contents()
 	}
