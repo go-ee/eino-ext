@@ -1,7 +1,6 @@
-module github.com/cloudwego/eino-ext/components/document/parser/html
+module github.com/go-ee/eino-ext/components/document/parser/html
 
 go 1.23.0
-
 
 require (
 	github.com/PuerkitoBio/goquery v1.8.1
