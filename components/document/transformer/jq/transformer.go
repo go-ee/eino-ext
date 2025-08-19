@@ -354,6 +354,9 @@ func runMapQuery(query *gojq.Query, input map[string]any) (result map[string]any
 
 // Update document from transformed map
 func updateDocFromMap(doc *schema.Document, transformedMap map[string]any) {
+	if newID, exists := transformedMap["id"].(string); exists {
+		doc.ID = newID
+	}
 	if newContent, exists := transformedMap["content"].(string); exists {
 		doc.Content = newContent
 	}
