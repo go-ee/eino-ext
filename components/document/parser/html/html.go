@@ -45,10 +45,9 @@ var _ parser.Parser = (*Parser)(nil)
 
 type Config struct {
 	// content selector of goquery. eg: body for <body>, #id for <div id="id">
-	Selector    *string `yaml:"selector" json:"selector"`
-	UseNameAsID bool    `yaml:"use_name_as_id" json:"use_name_as_id"`
-	Handler     *string `yaml:"handler" json:"handler"`
-	ChunkSize   int     `yaml:"chunk_size" json:"chunk_size"`
+	Selector  *string `yaml:"selector" json:"selector"`
+	Handler   *string `yaml:"handler" json:"handler"`
+	ChunkSize int     `yaml:"chunk_size" json:"chunk_size"`
 }
 
 // implOptions is used to extract the config from the generic parser.Option
@@ -118,12 +117,19 @@ func (p *Parser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Opt
 	if err != nil {
 		return nil, err
 	}
+
+	if option.ExtraMeta != nil {
+		for k, v := range option.ExtraMeta {
+			meta[k] = v
+		}
+	}
 	meta[MetaKeySource] = option.URI
 
 	var handler Handler
 	if config.Handler != nil {
 		handler, _ = p.Handlers[*config.Handler]
 	}
+
 	if handler == nil {
 		handler = Generic
 	}
@@ -177,13 +183,9 @@ func Generic(ctx context.Context, selection *goquery.Selection, config *Config, 
 	sanitized := bluemonday.UGCPolicy().Sanitize(selection.Text())
 	content := strings.TrimSpace(sanitized)
 
-	id := ""
-	if config.UseNameAsID {
-		id = meta[MetaFileName].(string)
-	}
 	docs = []*schema.Document{
 		{
-			ID:       id,
+			ID:       "0",
 			Content:  content,
 			MetaData: meta,
 		},
