@@ -35,6 +35,7 @@ const (
 	MetaKeyLang    = "_language"
 	MetaKeyCharset = "_charset"
 	MetaKeySource  = "_source"
+	MetaFileName   = "_file_name"
 
 	// DefaultChunkSize is the default size for text chunks
 	DefaultChunkSize = 7000 // Default text chunk size in characters
@@ -44,9 +45,10 @@ var _ parser.Parser = (*Parser)(nil)
 
 type Config struct {
 	// content selector of goquery. eg: body for <body>, #id for <div id="id">
-	Selector  *string `yaml:"selector" json:"selector"`
-	Handler   *string `yaml:"handler" json:"handler"`
-	ChunkSize int     `yaml:"chunk_size" json:"chunk_size"`
+	Selector    *string `yaml:"selector" json:"selector"`
+	UseNameAsID bool    `yaml:"use_name_as_id" json:"use_name_as_id"`
+	Handler     *string `yaml:"handler" json:"handler"`
+	ChunkSize   int     `yaml:"chunk_size" json:"chunk_size"`
 }
 
 // implOptions is used to extract the config from the generic parser.Option
@@ -175,8 +177,13 @@ func Generic(ctx context.Context, selection *goquery.Selection, config *Config, 
 	sanitized := bluemonday.UGCPolicy().Sanitize(selection.Text())
 	content := strings.TrimSpace(sanitized)
 
+	id := ""
+	if config.UseNameAsID {
+		id = meta[MetaFileName].(string)
+	}
 	docs = []*schema.Document{
 		{
+			ID:       id,
 			Content:  content,
 			MetaData: meta,
 		},
