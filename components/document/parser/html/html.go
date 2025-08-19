@@ -35,13 +35,18 @@ const (
 	MetaKeyLang    = "_language"
 	MetaKeyCharset = "_charset"
 	MetaKeySource  = "_source"
+
+	// DefaultChunkSize is the default size for text chunks
+	DefaultChunkSize = 7000 // Default text chunk size in characters
 )
 
 var _ parser.Parser = (*Parser)(nil)
 
 type Config struct {
 	// content selector of goquery. eg: body for <body>, #id for <div id="id">
-	Selector *string
+	Selector  *string `yaml:"selector" json:"selector"`
+	Handler   *string `yaml:"handler" json:"handler"`
+	ChunkSize int     `yaml:"chunk_size" json:"chunk_size"`
 }
 
 // implOptions is used to extract the config from the generic parser.Option
@@ -60,6 +65,8 @@ var (
 	BodySelector = "body"
 )
 
+type Handler func(ctx context.Context, selection *goquery.Selection, config *Config, meta map[string]any) (docs []*schema.Document, err error)
+
 // NewParser returns a new parser.
 func NewParser(ctx context.Context, conf *Config) (parser *Parser, err error) {
 	if conf == nil {
@@ -67,7 +74,8 @@ func NewParser(ctx context.Context, conf *Config) (parser *Parser, err error) {
 	}
 
 	return &Parser{
-		Config: conf,
+		Config:   conf,
+		Handlers: map[string]Handler{},
 	}, nil
 }
 
@@ -75,10 +83,11 @@ func NewParser(ctx context.Context, conf *Config) (parser *Parser, err error) {
 // use goquery to parse the HTML content, will read the <body> content as text (remove tags).
 // will extract title/description/language/charset from the HTML content as meta data.
 type Parser struct {
-	Config *Config
+	Config   *Config
+	Handlers map[string]Handler
 }
 
-func (p *Parser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Option) ([]*schema.Document, error) {
+func (p *Parser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Option) (docs []*schema.Document, err error) {
 	// Extract implementation-specific options
 	config := parser.GetImplSpecificOptions(&implOptions{}, opts...).Config
 
@@ -92,6 +101,10 @@ func (p *Parser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Opt
 		return nil, fmt.Errorf("xlsx parser config not provided in options and no default config available")
 	}
 
+	if config.ChunkSize == 0 {
+		config.ChunkSize = DefaultChunkSize
+	}
+
 	doc, err := goquery.NewDocumentFromReader(reader)
 	if err != nil {
 		return nil, err
@@ -99,40 +112,32 @@ func (p *Parser) Parse(ctx context.Context, reader io.Reader, opts ...parser.Opt
 
 	option := parser.GetCommonOptions(&parser.Options{}, opts...)
 
-	var contentSel *goquery.Selection
-
-	if p.Config.Selector != nil {
-		contentSel = doc.Find(*p.Config.Selector).Contents()
-	} else {
-		contentSel = doc.Contents()
-	}
-
 	meta, err := p.getMetaData(ctx, doc)
 	if err != nil {
 		return nil, err
 	}
 	meta[MetaKeySource] = option.URI
 
-	if option.ExtraMeta != nil {
-		for k, v := range option.ExtraMeta {
-			meta[k] = v
-		}
+	var handler Handler
+	if config.Handler != nil {
+		handler, _ = p.Handlers[*config.Handler]
+	}
+	if handler == nil {
+		handler = Generic
 	}
 
-	sanitized := bluemonday.UGCPolicy().Sanitize(contentSel.Text())
-	content := strings.TrimSpace(sanitized)
-
-	document := &schema.Document{
-		Content:  content,
-		MetaData: meta,
+	var contentSel *goquery.Selection
+	if config.Selector != nil {
+		contentSel = doc.Find(*config.Selector).Contents()
+	} else {
+		contentSel = doc.Contents()
 	}
 
-	return []*schema.Document{
-		document,
-	}, nil
+	docs, err = handler(ctx, contentSel, config, meta)
+	return
 }
 
-func (p *Parser) getMetaData(ctx context.Context, doc *goquery.Document) (map[string]any, error) {
+func (p *Parser) getMetaData(_ context.Context, doc *goquery.Document) (map[string]any, error) {
 	meta := map[string]any{}
 
 	title := doc.Find("title")
@@ -164,4 +169,17 @@ func (p *Parser) getMetaData(ctx context.Context, doc *goquery.Document) (map[st
 	}
 
 	return meta, nil
+}
+
+func Generic(ctx context.Context, selection *goquery.Selection, config *Config, meta map[string]any) (docs []*schema.Document, err error) {
+	sanitized := bluemonday.UGCPolicy().Sanitize(selection.Text())
+	content := strings.TrimSpace(sanitized)
+
+	docs = []*schema.Document{
+		{
+			Content:  content,
+			MetaData: meta,
+		},
+	}
+	return
 }
