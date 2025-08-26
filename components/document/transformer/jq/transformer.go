@@ -51,41 +51,41 @@ func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, op
 
 // --- Configuration Structs with JSON annotations ---
 type AggregationAction struct {
-	Source         string  `yaml:"source" json:"source"`
-	Target         string  `yaml:"target" json:"target"`
-	Join           *string `yaml:"join,omitempty" json:"join,omitempty"`
-	Hierarchy      *string `yaml:"hierarchy,omitempty" json:"hierarchy,omitempty"`
-	HierarchyUntil *int    `yaml:"hierarchy_until,omitempty" json:"hierarchy_until,omitempty"`
-	HierarchySkip  []int   `yaml:"hierarchy_skip,omitempty" json:"hierarchy_skip,omitempty"`
-	LevelPrefix    *string `yaml:"level_prefix,omitempty" json:"level_prefix,omitempty"`
+	Source         string  `yaml:"source" json:"source" jsonscheme:"description=Field to aggregate from source documents, if empty uses content"`
+	Target         string  `yaml:"target" json:"target" jsonscheme:"description=Field to aggregate into target documents, if empty uses content"`
+	Join           *string `yaml:"join,omitempty" json:"join,omitempty" jsonscheme:"description=Field to join on, if empty no join is performed"`
+	Hierarchy      *string `yaml:"hierarchy,omitempty" json:"hierarchy,omitempty" jsonscheme:"description=Field to use for hierarchy, if empty no hierarchy is applied"`
+	HierarchyUntil *int    `yaml:"hierarchy_until,omitempty" json:"hierarchy_until,omitempty" jsonscheme:"description=Level until which hierarchy is applied, if empty applies to all levels"`
+	HierarchySkip  []int   `yaml:"hierarchy_skip,omitempty" json:"hierarchy_skip,omitempty" jsonscheme:"description=Levels to skip in hierarchy, if empty no levels are skipped"`
+	LevelPrefix    *string `yaml:"level_prefix,omitempty" json:"level_prefix,omitempty" jsonscheme:"description=Prefix to add to level names, if empty no prefix is added"`
 }
 
 type Aggregation struct {
-	Name   string            `yaml:"name" json:"name"`
-	Source string            `yaml:"source" json:"source"`
-	Target string            `yaml:"target" json:"target"`
-	Action AggregationAction `yaml:"action" json:"action"`
+	Name   string            `yaml:"name" json:"name" jsonscheme:"description=Name of the aggregation"`
+	Source string            `yaml:"source" json:"source" jsonscheme:"description=Field to aggregate from source documents, if empty uses content"`
+	Target string            `yaml:"target" json:"target" jsonscheme:"description=Field to aggregate into target documents, if empty uses content"`
+	Action AggregationAction `yaml:"action" json:"action" jsonscheme:"description=Action to perform for the aggregation"`
 
 	sourceQuery *gojq.Query
 	targetQuery *gojq.Query
 }
 
 type CustomTransform struct {
-	Name     string   `yaml:"name" json:"name"`
-	Selector string   `yaml:"selector" json:"selector"`
-	Function string   `yaml:"function" json:"function"`
-	Target   string   `yaml:"target" json:"target"`
-	Args     []string `yaml:"args" json:"args"`
+	Name     string   `yaml:"name" json:"name" jsonscheme:"description=Name of the custom transform"`
+	Selector string   `yaml:"selector" json:"selector" jsonscheme:"description=Selector to apply the transform"`
+	Function string   `yaml:"function" json:"function" jsonscheme:"description=Function to call for the transform"`
+	Target   string   `yaml:"target" json:"target" jsonscheme:"description=Field to store the transform result"`
+	Args     []string `yaml:"args" json:"args" jsonscheme:"description=Arguments to pass to the transform function"`
 
 	selectorQuery *gojq.Query
 	argQueries    []*gojq.Query
 }
 
 type Config struct {
-	Transform        string            `yaml:"transform" json:"transform"`
-	Filter           string            `yaml:"filter" json:"filter"`
-	Aggregations     []Aggregation     `yaml:"aggregations" json:"aggregations"`
-	CustomTransforms []CustomTransform `yaml:"custom_transforms" json:"custom_transforms"`
+	Transform        string            `yaml:"transform" json:"transform" jsonscheme:"description=Transform query to apply"`
+	Filter           string            `yaml:"filter" json:"filter" jsonscheme:"description=Filter query to apply"`
+	Aggregations     []Aggregation     `yaml:"aggregations" json:"aggregations" jsonscheme:"description=List of aggregation rules"`
+	CustomTransforms []CustomTransform `yaml:"custom_transforms" json:"custom_transforms" jsonscheme:"description=List of custom transform rules"`
 }
 
 // --- Core Logic Implementation ---
