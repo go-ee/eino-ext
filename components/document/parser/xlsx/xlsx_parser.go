@@ -42,8 +42,8 @@ type XlsxParser struct {
 
 type Columns struct {
 	// NoHeader is set to false by default, which means that the first row is used as the table header
-	NoHeader  bool `yaml:"no_header" json:"no_header" jsonschema:"description=Whether the first row is used as the table header,optional"`
-	NoRowMeta bool `yaml:"no_row_meta" json:"no_row_meta" jsonschema:"description=Whether to generate _row metadata,optional"`
+	NoHeader  bool `yaml:"no_header" json:"no_header" jsonschema:"description=Whether the first row is used as the table header"`
+	NoRowMeta bool `yaml:"no_row_meta" json:"no_row_meta" jsonschema:"description=Whether to generate _row metadata"`
 
 	Content     []string          `yaml:"content,omitempty" json:"content,omitempty" jsonschema:"description=Content columns,optional"`               // e.g., ["A", "D", "F"]
 	Meta        []string          `yaml:"meta,omitempty" json:"meta,omitempty" jsonschema:"description=Meta columns,optional"`                        // e.g., ["B", "C"]
@@ -57,7 +57,7 @@ type Config struct {
 	// IDPrefix is set to customize the prefix of document ID, default 1,2,3, ...
 	IDPrefix string `yaml:"id_prefix,omitempty" json:"id_prefix,omitempty" jsonschema:"description=Custom prefix for document ID,default is 1,2,3, ... ,optional"`
 
-	Columns Columns `yaml:"columns" json:"columns" jsonschema:"description=Columns to be processed,if not set,all columns will be processed"`
+	Columns *Columns `yaml:"columns" json:"columns" jsonschema:"description=Columns to be processed,if not set,all columns will be processed,optional"`
 }
 
 // implOptions is used to extract the config from the generic parser.Option

@@ -82,10 +82,10 @@ type CustomTransform struct {
 }
 
 type Config struct {
-	Transform        string            `yaml:"transform" json:"transform" jsonscheme:"description=Transform query to apply"`
-	Filter           string            `yaml:"filter" json:"filter" jsonscheme:"description=Filter query to apply"`
-	Aggregations     []Aggregation     `yaml:"aggregations" json:"aggregations" jsonscheme:"description=List of aggregation rules"`
-	CustomTransforms []CustomTransform `yaml:"custom_transforms" json:"custom_transforms" jsonscheme:"description=List of custom transform rules"`
+	Transform        *string            `yaml:"transform" json:"transform" jsonscheme:"description=Transform query to apply,optional,optional"`
+	Filter           *string            `yaml:"filter" json:"filter" jsonscheme:"description=Filter query to apply,optional"`
+	Aggregations     []*Aggregation     `yaml:"aggregations" json:"aggregations" jsonscheme:"description=List of aggregation rules,optional"`
+	CustomTransforms []*CustomTransform `yaml:"custom_transforms" json:"custom_transforms" jsonscheme:"description=List of custom transform rules,optional"`
 }
 
 // --- Core Logic Implementation ---
@@ -94,8 +94,8 @@ type Config struct {
 type ConfigRules struct {
 	transformQuery   *gojq.Query
 	filterQuery      *gojq.Query
-	aggregations     []Aggregation
-	customTransforms []CustomTransform
+	aggregations     []*Aggregation
+	customTransforms []*CustomTransform
 }
 
 type TransformerRules struct {
@@ -127,16 +127,16 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 		}
 
 		// Parse transform query if provided
-		if cfg.Transform != "" {
-			if configRule.transformQuery, err = gojq.Parse(cfg.Transform); err != nil {
+		if cfg.Transform != nil {
+			if configRule.transformQuery, err = gojq.Parse(*cfg.Transform); err != nil {
 				err = fmt.Errorf("failed to parse transform query: %w", err)
 				return
 			}
 		}
 
 		// Parse filter query if provided
-		if cfg.Filter != "" {
-			if configRule.filterQuery, err = gojq.Parse(cfg.Filter); err != nil {
+		if cfg.Filter != nil {
+			if configRule.filterQuery, err = gojq.Parse(*cfg.Filter); err != nil {
 				err = fmt.Errorf("failed to parse filter query: %w", err)
 				return
 			}
@@ -144,7 +144,7 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 
 		// Parse aggregation rules
 		for i := range configRule.aggregations {
-			rule := &configRule.aggregations[i]
+			rule := configRule.aggregations[i]
 			if rule.sourceQuery, err = gojq.Parse(rule.Source); err != nil {
 				err = fmt.Errorf("failed to parse source selector for rule '%s': %w", rule.Name, err)
 				return
@@ -157,7 +157,7 @@ func NewTransformerRules(cfgs []*Config, funcRegistry map[string]any) (transform
 
 		// Parse custom transforms
 		for i := range configRule.customTransforms {
-			rule := &configRule.customTransforms[i]
+			rule := configRule.customTransforms[i]
 			if rule.selectorQuery, err = gojq.Parse(rule.Selector); err != nil {
 				err = fmt.Errorf("failed to parse selector for transform '%s': %w", rule.Name, err)
 				return
@@ -217,7 +217,7 @@ func (t *TransformerRules) applyConfigRules(_ context.Context, rules *ConfigRule
 		// Apply individual transformation
 		if rules.transformQuery != nil {
 			var transformedMap map[string]any
-			if transformedMap, err = runMapQuery(rules.transformQuery, docAsMap); err != nil {
+			if transformedMap, err = MapQuery(rules.transformQuery, docAsMap); err != nil {
 				return
 			} else {
 				updateDocFromMap(doc, transformedMap)
@@ -228,7 +228,7 @@ func (t *TransformerRules) applyConfigRules(_ context.Context, rules *ConfigRule
 
 		// Apply aggregation rules - first check if document is a target
 		for i := range rules.aggregations {
-			rule := &rules.aggregations[i]
+			rule := rules.aggregations[i]
 
 			// Check if document is a target for aggregation
 			var isTarget bool
@@ -292,7 +292,7 @@ func (t *TransformerRules) applyConfigRules(_ context.Context, rules *ConfigRule
 
 		// Apply custom transforms
 		for i := range rules.customTransforms {
-			rule := &rules.customTransforms[i]
+			rule := rules.customTransforms[i]
 			var isTarget bool
 			if isTarget, err = runBoolQuery(rule.selectorQuery, docAsMap); err != nil {
 				err = fmt.Errorf("rule '%s' selector check failed: %w", rule.Name, err)
@@ -333,7 +333,7 @@ func runBoolQuery(query *gojq.Query, input map[string]any) (result bool, err err
 	return
 }
 
-func runMapQuery(query *gojq.Query, input map[string]any) (result map[string]any, err error) {
+func MapQuery(query *gojq.Query, input map[string]any) (result map[string]any, err error) {
 	iter := query.Run(input)
 	var v interface{}
 	var ok bool
