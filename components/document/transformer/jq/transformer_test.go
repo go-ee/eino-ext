@@ -29,7 +29,7 @@ var testFuncRegistry = map[string]any{
 }
 
 // newTestTransformer is a helper to quickly create a transformer from a YAML string.
-func newTestTransformer(t *testing.T, yamlConfig string, funcRegistry map[string]any) *TransformerRules {
+func newTestTransformer(t *testing.T, yamlConfig string, funcRegistry map[string]any) *Transformers {
 	t.Helper() // Marks this as a test helper function.
 
 	var cfg Config
@@ -37,7 +37,7 @@ func newTestTransformer(t *testing.T, yamlConfig string, funcRegistry map[string
 		t.Fatalf("Failed to unmarshal test YAML config: %v", err)
 	}
 
-	rules, err := NewTransformerRules([]*Config{&cfg}, funcRegistry)
+	rules, err := NewTransformers([]*Config{&cfg}, funcRegistry)
 	if err != nil {
 		t.Fatalf("NewTransformerRules failed: %v", err)
 	}
@@ -45,7 +45,7 @@ func newTestTransformer(t *testing.T, yamlConfig string, funcRegistry map[string
 }
 
 // newMultiConfigTestTransformer creates a transformer with multiple configs
-func newMultiConfigTestTransformer(t *testing.T, yamlConfigs []string, funcRegistry map[string]any) *TransformerRules {
+func newMultiConfigTestTransformer(t *testing.T, yamlConfigs []string, funcRegistry map[string]any) *Transformers {
 	t.Helper()
 
 	configs := make([]*Config, len(yamlConfigs))
@@ -57,7 +57,7 @@ func newMultiConfigTestTransformer(t *testing.T, yamlConfigs []string, funcRegis
 		configs[i] = &cfg
 	}
 
-	rules, err := NewTransformerRules(configs, funcRegistry)
+	rules, err := NewTransformers(configs, funcRegistry)
 	if err != nil {
 		t.Fatalf("NewTransformerRules failed: %v", err)
 	}
@@ -234,7 +234,7 @@ custom_transforms:
 
 func TestNewTransformerRules_ErrorCases(t *testing.T) {
 	t.Run("Nil Config", func(t *testing.T) {
-		_, err := NewTransformerRules(nil, nil)
+		_, err := NewTransformers(nil, nil)
 		if err == nil {
 			t.Fatal("Expected an error for nil config, but got nil")
 		}
@@ -246,7 +246,7 @@ func TestNewTransformerRules_ErrorCases(t *testing.T) {
 		if err := yaml.Unmarshal([]byte(invalidConfig), &cfg); err != nil {
 			t.Fatalf("Unmarshal failed: %v", err)
 		}
-		_, err := NewTransformerRules([]*Config{&cfg}, nil)
+		_, err := NewTransformers([]*Config{&cfg}, nil)
 		if err == nil {
 			t.Fatal("Expected an error for invalid JQ syntax, but got nil")
 		}
