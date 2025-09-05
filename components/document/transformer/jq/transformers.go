@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 
 	"github.com/cloudwego/eino/components/document"
 	"github.com/cloudwego/eino/schema"
-	"github.com/itchyny/gojq"
 )
 
 // Common constants for document fields
@@ -20,76 +18,14 @@ const (
 )
 
 // --- Public Transformer Entrypoint ---
-
-type implOptions struct {
+type Options struct {
 	Transformers *Transformers
 }
 
 func WithRules(transformers *Transformers) document.TransformerOption {
-	return document.WrapTransformerImplSpecificOptFn(func(o *implOptions) {
+	return document.WrapTransformerImplSpecificOptFn(func(o *Options) {
 		o.Transformers = transformers
 	})
-}
-
-func NewDocExtended(doc *schema.Document) (ret *DocExtended) {
-	ret = &DocExtended{
-		Doc: doc,
-	}
-	ret.UpdateMap()
-	return
-}
-
-type DocExtended struct {
-	Doc *schema.Document
-	Map map[string]any
-}
-
-func (d *DocExtended) ID() (id string) {
-	var ok bool
-	if id, ok = d.Map[DOC_ID].(string); !ok {
-		id = d.Doc.ID
-	}
-	return
-}
-
-func (d *DocExtended) CheckChangedID() (err error) {
-	possibleTransformedID := d.ID()
-	if d.Doc.ID != possibleTransformedID {
-		d.Doc.ID = possibleTransformedID
-	}
-	return
-}
-
-// Update document from transformed map
-func (d *DocExtended) UpdateDoc() *schema.Document {
-	if newID, exists := d.Map[DOC_ID].(string); exists {
-		d.Doc.ID = newID
-	}
-	if newContent, exists := d.Map[DOC_CONTENT].(string); exists {
-		d.Doc.Content = newContent
-	}
-	if newMeta, exists := d.Map[DOC_META_DATA].(map[string]any); exists {
-		d.Doc.MetaData = newMeta
-	}
-	return d.Doc
-}
-
-func (d *DocExtended) UpdateMap() map[string]any {
-	metaCopy := make(map[string]any, len(d.Doc.MetaData))
-	for k, v := range d.Doc.MetaData {
-		metaCopy[k] = v
-	}
-	d.Map = map[string]any{DOC_ID: d.Doc.ID, DOC_CONTENT: d.Doc.Content, DOC_META_DATA: metaCopy}
-	return d.Map
-}
-
-// convertMapsToDocuments updates original documents with modified maps and returns them
-func convertMapsToDocuments(docs []*DocExtended) (documents []*schema.Document) {
-	documents = make([]*schema.Document, 0, len(docs))
-	for i, doc := range docs {
-		documents[i] = doc.UpdateDoc()
-	}
-	return documents
 }
 
 type Transformer struct {
@@ -98,7 +34,7 @@ type Transformer struct {
 
 // Transform is the main entry point called by the Eino framework.
 func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, opts ...document.TransformerOption) (documents []*schema.Document, err error) {
-	option := implOptions{}
+	option := Options{}
 	document.GetTransformerImplSpecificOptions(&option, opts...)
 
 	transformers := option.Transformers
@@ -120,12 +56,94 @@ func (t *Transformer) Transform(ctx context.Context, docs []*schema.Document, op
 	return
 }
 
+// --- Core Logic Implementation ---
+
+type Transformers struct {
+	configs          []*Config
+	functionRegistry map[string]any
+}
+
+// LeveledDocument represents a document with an associated level
+type LeveledDocument struct {
+	Level int
+	Doc   *DocExtended
+}
+
+func NewTransformers(cfgs []*Config, funcRegistry map[string]any) (transformers *Transformers, err error) {
+	if len(cfgs) == 0 {
+		err = fmt.Errorf("configurations cannot be nil or empty")
+		return
+	}
+
+	transformers = &Transformers{
+		functionRegistry: funcRegistry,
+		configs:          make([]*Config, 0, len(cfgs)),
+	}
+
+	for _, cfg := range cfgs {
+		// Parse transform query if provided
+		if cfg.Transform != nil {
+			if err = cfg.Transform.Init(); err != nil {
+				return
+			}
+		}
+
+		// Parse filter query if provided
+		if cfg.Filter != nil {
+			if err = cfg.Filter.Init(); err != nil {
+				return
+			}
+		}
+
+		// Parse single aggregation rule if present
+		if cfg.Aggregation != nil {
+			if err = cfg.Aggregation.Init(); err != nil {
+				return
+			}
+		}
+
+		// Parse single custom transform if present
+		if cfg.Custom != nil {
+			if err = cfg.Custom.Init(); err != nil {
+				return
+			}
+		}
+
+		// Parse load file transform if present
+		if cfg.LoadFile != nil {
+			if err = cfg.LoadFile.Init(); err != nil {
+				return
+			}
+		}
+		transformers.configs = append(transformers.configs, cfg)
+	}
+	return
+}
+
+func (t *Transformers) Transform(ctx context.Context, docs []*DocExtended, opts ...document.TransformerOption) (currentDocs []*DocExtended, err error) {
+	// Create document maps and indices once	// Process documents through each config in sequence
+	currentDocs = docs
+	for i, config := range t.configs {
+		// Log configuration details for debugging
+		configDetails := config.Description()
+		log.Printf("Applying transformer rule #%d: %s", i+1, configDetails)
+
+		if currentDocs, err = config.Apply(currentDocs, t.functionRegistry); err != nil {
+			log.Printf("Error applying rule #%d: %v", i+1, err)
+			return
+		}
+		log.Printf("Successfully applied rule #%d, documents count: %d", i+1, len(currentDocs))
+	}
+	return
+}
+
 // --- Configuration Structs with JSON annotations ---
 type Config struct {
 	Transform   *Transform       `yaml:"transform" json:"transform" jsonscheme:"description=Transform operation,optional"`
 	Filter      *Filter          `yaml:"filter" json:"filter" jsonscheme:"description=Filter operation,optional"`
 	Aggregation *Aggregation     `yaml:"aggregation" json:"aggregation" jsonscheme:"description=Aggregation rule,optional"`
 	Custom      *CustomTransform `yaml:"custom" json:"custom" jsonscheme:"description=Custom transform rule,optional"`
+	LoadFile    *LoadFile        `yaml:"loadFile" json:"loadFile" jsonscheme:"description=Load external file into document,optional"`
 }
 
 func (c *Config) Apply(docs []*DocExtended, functionRegistry map[string]any) (currentDocs []*DocExtended, err error) {
@@ -247,6 +265,18 @@ func (c *Config) Apply(docs []*DocExtended, functionRegistry map[string]any) (cu
 				return
 			}
 		}
+
+		// Apply load file transform if present
+		if c.LoadFile != nil {
+			if err = c.LoadFile.Apply(doc); err != nil {
+				if c.LoadFile.IgnoreErrors {
+					log.Println(err)
+					err = nil
+				} else {
+					return
+				}
+			}
+		}
 	}
 
 	// Final pass: Process forward aggregation if present
@@ -254,162 +284,6 @@ func (c *Config) Apply(docs []*DocExtended, functionRegistry map[string]any) (cu
 		if err = c.Aggregation.processForward(currentDocs); err != nil {
 			return
 		}
-	}
-	return
-}
-
-// --- Core Logic Implementation ---
-
-type Transformers struct {
-	configs          []*Config
-	functionRegistry map[string]any
-}
-
-// LeveledDocument represents a document with an associated level
-type LeveledDocument struct {
-	Level int
-	Doc   *DocExtended
-}
-
-func NewTransformers(cfgs []*Config, funcRegistry map[string]any) (transformers *Transformers, err error) {
-	if len(cfgs) == 0 {
-		err = fmt.Errorf("configurations cannot be nil or empty")
-		return
-	}
-
-	transformers = &Transformers{
-		functionRegistry: funcRegistry,
-		configs:          make([]*Config, 0, len(cfgs)),
-	}
-
-	for _, cfg := range cfgs {
-		// Parse transform query if provided
-		if cfg.Transform != nil {
-			if err = cfg.Transform.Init(); err != nil {
-				return
-			}
-		}
-
-		// Parse filter query if provided
-		if cfg.Filter != nil {
-			if err = cfg.Filter.Init(); err != nil {
-				return
-			}
-		}
-
-		// Parse single aggregation rule if present
-		if cfg.Aggregation != nil {
-			if err = cfg.Aggregation.Init(); err != nil {
-				return
-			}
-		}
-
-		// Parse single custom transform if present
-		if cfg.Custom != nil {
-			if err = cfg.Custom.Init(); err != nil {
-				return
-			}
-		}
-		transformers.configs = append(transformers.configs, cfg)
-	}
-	return
-}
-
-func (t *Transformers) Transform(ctx context.Context, docs []*DocExtended, opts ...document.TransformerOption) (currentDocs []*DocExtended, err error) {
-	// Create document maps and indices once	// Process documents through each config in sequence
-	currentDocs = docs
-	for i, config := range t.configs {
-		// Log configuration details for debugging
-		configDetails := config.Description()
-		log.Printf("Applying transformer rule #%d: %s", i+1, configDetails)
-
-		if currentDocs, err = config.Apply(currentDocs, t.functionRegistry); err != nil {
-			log.Printf("Error applying rule #%d: %v", i+1, err)
-			return
-		}
-		log.Printf("Successfully applied rule #%d, documents count: %d", i+1, len(currentDocs))
-	}
-	return
-}
-
-// Common helper functions for query execution
-func runBoolQuery(query *gojq.Query, docAsMap map[string]any) (result bool, err error) {
-	iter := query.Run(docAsMap)
-	var v interface{}
-	var ok bool
-	if v, ok = iter.Next(); !ok {
-		result = false
-		return
-	}
-	if e, isErr := v.(error); isErr {
-		err = e
-		return
-	}
-	var boolResult bool
-	if boolResult, ok = v.(bool); !ok {
-		err = fmt.Errorf("query did not return a boolean, got %T", v)
-		return
-	}
-	result = boolResult
-	return
-}
-
-func MapQuery(query *gojq.Query, docAsMap map[string]any) (resultMap map[string]any, err error) {
-	iter := query.Run(docAsMap)
-	var v any
-	var ok bool
-	if v, ok = iter.Next(); !ok {
-		resultMap = docAsMap
-		return
-	}
-	if e, isErr := v.(error); isErr {
-		err = fmt.Errorf("query error: %w", e)
-		return
-	}
-	if resultMap, ok = v.(map[string]any); !ok {
-		err = fmt.Errorf("query did not return a map")
-		return
-	}
-	return
-}
-
-func ToInt(v any) (i int, ok bool) {
-	switch val := v.(type) {
-	case int:
-		i, ok = val, true
-	case int32:
-		i, ok = int(val), true
-	case int64:
-		i, ok = int(val), true
-	case float32:
-		i, ok = int(val), true
-	case float64:
-		i, ok = int(val), true
-	default:
-		valueStr := fmt.Sprintf("%v", v)
-		var err error
-		if i, err = strconv.Atoi(valueStr); err == nil {
-			ok = true
-		}
-	}
-	return
-}
-
-func JoinToStr(input []interface{}, separator string) (result string) {
-	strs := make([]string, len(input))
-	for i, v := range input {
-		strs[i] = ToStr(v)
-	}
-	result = strings.Join(strs, separator)
-	return
-}
-
-func ToStr(input interface{}) (ret string) {
-	switch val := input.(type) {
-	case string:
-		ret = val
-	default:
-		ret = fmt.Sprintf("%v", input)
 	}
 	return
 }
@@ -432,6 +306,10 @@ func (c *Config) Description() string {
 
 	if c.Custom != nil {
 		parts = append(parts, fmt.Sprintf("custom transform '%s'", c.Custom.Name))
+	}
+
+	if c.LoadFile != nil {
+		parts = append(parts, fmt.Sprintf("loadFile '%s'", c.LoadFile.Name))
 	}
 
 	if len(parts) == 0 {
