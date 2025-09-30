@@ -387,6 +387,9 @@ func (cm *ChatModel) genInputAndConf(input []*schema.Message, opts ...model.Opti
 	}
 
 	m.ThinkingConfig = cm.thinkingConfig
+	if geminiOptions.ThinkingConfig != nil {
+		m.ThinkingConfig = geminiOptions.ThinkingConfig
+	}
 	return conf.Model, nInput, m, conf, nil
 }
 
@@ -763,7 +766,10 @@ func (cm *ChatModel) convCallbackOutput(message *schema.Message, conf *model.Con
 	}
 	if message.ResponseMeta != nil && message.ResponseMeta.Usage != nil {
 		callbackOutput.TokenUsage = &model.TokenUsage{
-			PromptTokens:     message.ResponseMeta.Usage.PromptTokens,
+			PromptTokens: message.ResponseMeta.Usage.PromptTokens,
+			PromptTokenDetails: model.PromptTokenDetails{
+				CachedTokens: message.ResponseMeta.Usage.PromptTokenDetails.CachedTokens,
+			},
 			CompletionTokens: message.ResponseMeta.Usage.CompletionTokens,
 			TotalTokens:      message.ResponseMeta.Usage.TotalTokens,
 		}

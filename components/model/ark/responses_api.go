@@ -49,6 +49,7 @@ type responsesAPIChatModel struct {
 	responseFormat *ResponseFormat
 	thinking       *arkModel.Thinking
 	cache          *CacheConfig
+	serviceTier    *string
 }
 
 func (cm *responsesAPIChatModel) Generate(ctx context.Context, input []*schema.Message,
@@ -202,11 +203,13 @@ Outer:
 				Role: schema.Assistant,
 			}
 			setContextID(msg, asEvent.Response.ID)
+			setServiceTier(msg, string(asEvent.Response.ServiceTier))
 			cm.sendCallbackOutput(sw, config, msg)
 			continue
 
 		case responses.ResponseCompletedEvent:
 			msg := cm.handleCompletedStreamEvent(asEvent)
+			setServiceTier(msg, string(asEvent.Response.ServiceTier))
 			cm.sendCallbackOutput(sw, config, msg)
 			break Outer
 
@@ -216,11 +219,13 @@ Outer:
 
 		case responses.ResponseIncompleteEvent:
 			msg := cm.handleIncompleteStreamEvent(asEvent)
+			setServiceTier(msg, string(asEvent.Response.ServiceTier))
 			cm.sendCallbackOutput(sw, config, msg)
 			break Outer
 
 		case responses.ResponseFailedEvent:
 			msg := cm.handleFailedStreamEvent(asEvent)
+			setServiceTier(msg, string(asEvent.Response.ServiceTier))
 			cm.sendCallbackOutput(sw, config, msg)
 			break Outer
 
@@ -269,7 +274,10 @@ func (cm *responsesAPIChatModel) sendCallbackOutput(sw *schema.StreamWriter[*mod
 	var token *model.TokenUsage
 	if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
 		token = &model.TokenUsage{
-			PromptTokens:     msg.ResponseMeta.Usage.PromptTokens,
+			PromptTokens: msg.ResponseMeta.Usage.PromptTokens,
+			PromptTokenDetails: model.PromptTokenDetails{
+				CachedTokens: msg.ResponseMeta.Usage.PromptTokenDetails.CachedTokens,
+			},
 			CompletionTokens: msg.ResponseMeta.Usage.CompletionTokens,
 			TotalTokens:      msg.ResponseMeta.Usage.TotalTokens,
 		}
@@ -314,7 +322,7 @@ func (cm *responsesAPIChatModel) handleCompletedStreamEvent(asChunk responses.Re
 	return &schema.Message{
 		Role: schema.Assistant,
 		ResponseMeta: &schema.ResponseMeta{
-			FinishReason: string(asChunk.Type),
+			FinishReason: string(asChunk.Response.Status),
 			Usage:        cm.toEinoTokenUsage(asChunk.Response.Usage),
 		},
 	}
@@ -432,6 +440,7 @@ func (cm *responsesAPIChatModel) genRequestAndOptions(in []*schema.Message, opti
 		MaxOutputTokens: newOpenaiIntOpt(options.MaxTokens),
 		Temperature:     newOpenaiFloatOpt(options.Temperature),
 		TopP:            newOpenaiFloatOpt(options.TopP),
+		ServiceTier:     responses.ResponseNewParamsServiceTier(ptrFromOrZero(cm.serviceTier)),
 	}
 
 	if req, err = cm.injectInput(req, in); err != nil {
@@ -545,7 +554,7 @@ func (cm *responsesAPIChatModel) injectInput(req responses.ResponseNewParams, in
 
 		case schema.System:
 			item.OfMessage = &responses.EasyInputMessageParam{
-				Role:    responses.EasyInputMessageRoleDeveloper,
+				Role:    responses.EasyInputMessageRoleSystem,
 				Content: content,
 			}
 
@@ -656,6 +665,10 @@ func (cm *responsesAPIChatModel) toOutputMessage(resp *responses.Response) (*sch
 	}
 
 	setContextID(msg, resp.ID)
+
+	if len(resp.ServiceTier) > 0 {
+		setServiceTier(msg, string(resp.ServiceTier))
+	}
 
 	if resp.Status == responses.ResponseStatusFailed {
 		msg.ResponseMeta.FinishReason = resp.Error.Message

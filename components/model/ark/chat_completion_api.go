@@ -54,6 +54,7 @@ type completionAPIChatModel struct {
 	responseFormat   *ResponseFormat
 	thinking         *model.Thinking
 	cache            *CacheConfig
+	serviceTier      *string
 }
 
 type tool struct {
@@ -278,6 +279,7 @@ func (cm *completionAPIChatModel) genRequest(in []*schema.Message, options *fmod
 		LogitBias:        cm.logitBias,
 		PresencePenalty:  cm.presencePenalty,
 		Thinking:         arkOpts.thinking,
+		ServiceTier:      cm.serviceTier,
 	}
 
 	if cm.responseFormat != nil {
@@ -413,6 +415,7 @@ func (cm *completionAPIChatModel) resolveChatResponse(resp model.ChatCompletionR
 
 	setModelName(msg, resp.Model)
 	setArkRequestID(msg, resp.ID)
+	setServiceTier(msg, resp.ServiceTier)
 
 	if content != nil && content.StringValue != nil {
 		msg.Content = *content.StringValue
@@ -467,6 +470,7 @@ func (cm *completionAPIChatModel) resolveStreamResponse(resp model.ChatCompletio
 	}
 	setArkRequestID(msg, resp.ID)
 	setModelName(msg, resp.Model)
+	setServiceTier(msg, resp.ServiceTier)
 
 	return msg, msgFound, nil
 }
