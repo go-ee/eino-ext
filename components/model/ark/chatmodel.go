@@ -141,6 +141,10 @@ type ChatModelConfig struct {
 	// ServiceTier specifies whether to use the TPM guarantee package. The effective target has purchased the inference access point for the guarantee package.
 	ServiceTier *string `json:"service_tier"`
 
+	// ReasoningEffort specifies the reasoning effort of the model.
+	// Optional.
+	ReasoningEffort *model.ReasoningEffort `json:"reasoning_effort,omitempty"`
+
 	Cache *CacheConfig `json:"cache,omitempty"`
 }
 
@@ -159,36 +163,6 @@ type CacheConfig struct {
 	// Optional.
 	SessionCache *SessionCacheConfig `json:"session_cache,omitempty"`
 }
-
-type SessionCacheConfig struct {
-	// EnableCache specifies whether to enable session cache.
-	// If enabled, the model will cache each conversation and reuse it for subsequent requests.
-	EnableCache bool `json:"enable_cache"`
-
-	// TTL specifies the survival time of cached data in seconds, with a maximum of 3 * 86400(3 days).
-	TTL int `json:"ttl"`
-}
-
-type APIType string
-
-const (
-	// To learn more about ContextAPI, see https://www.volcengine.com/docs/82379/1528789
-	ContextAPI APIType = "context_api"
-	// To learn more about ResponsesAPI, see https://www.volcengine.com/docs/82379/1569618
-	ResponsesAPI APIType = "responses_api"
-)
-
-type ResponseFormat struct {
-	Type       model.ResponseFormatType                       `json:"type"`
-	JSONSchema *model.ResponseFormatJSONSchemaJSONSchemaParam `json:"json_schema,omitempty"`
-}
-
-type caching string
-
-const (
-	cachingEnabled  caching = "enabled"
-	cachingDisabled caching = "disabled"
-)
 
 func NewChatModel(_ context.Context, config *ChatModelConfig) (*ChatModel, error) {
 	if config == nil {
@@ -260,6 +234,7 @@ func buildChatCompletionAPIChatModel(config *ChatModelConfig) *completionAPIChat
 		thinking:         config.Thinking,
 		cache:            config.Cache,
 		serviceTier:      config.ServiceTier,
+		reasoningEffort:  config.ReasoningEffort,
 	}
 
 	return cm
@@ -441,13 +416,17 @@ func (cm *ChatModel) WithTools(tools []*schema.ToolInfo) (fmodel.ToolCallingChat
 		return nil, fmt.Errorf("failed to convert to ark responsesAPI tools: %w", err)
 	}
 
+	tc := schema.ToolChoiceAllowed
+
 	ncm := *cm.chatModel
 	ncm.rawTools = tools
 	ncm.tools = arkTools
+	ncm.toolChoice = &tc
 
 	nrcm := *cm.respChatModel
 	nrcm.rawTools = tools
 	nrcm.tools = respTools
+	nrcm.toolChoice = &tc
 
 	return &ChatModel{
 		chatModel:     &ncm,
@@ -456,6 +435,30 @@ func (cm *ChatModel) WithTools(tools []*schema.ToolInfo) (fmodel.ToolCallingChat
 }
 
 func (cm *ChatModel) BindTools(tools []*schema.ToolInfo) (err error) {
+	if err = cm.tryBindTools(tools); err != nil {
+		return err
+	}
+
+	tc := schema.ToolChoiceAllowed
+	cm.chatModel.toolChoice = &tc
+	cm.respChatModel.toolChoice = &tc
+
+	return nil
+}
+
+func (cm *ChatModel) BindForcedTools(tools []*schema.ToolInfo) (err error) {
+	if err = cm.tryBindTools(tools); err != nil {
+		return err
+	}
+
+	tc := schema.ToolChoiceForced
+	cm.chatModel.toolChoice = &tc
+	cm.respChatModel.toolChoice = &tc
+
+	return nil
+}
+
+func (cm *ChatModel) tryBindTools(tools []*schema.ToolInfo) (err error) {
 	if len(tools) == 0 {
 		return errors.New("no tools to bind")
 	}
@@ -551,7 +554,7 @@ func (cm *ChatModel) createContextByContextAPI(ctx context.Context, prefix []*sc
 		TruncationStrategy: truncation,
 	}
 	for _, msg := range prefix {
-		content, err := cm.chatModel.toArkContent(msg.Content, msg.MultiContent)
+		content, err := cm.chatModel.toArkContent(msg)
 		if err != nil {
 			return nil, fmt.Errorf("convert message fail: %w", err)
 		}

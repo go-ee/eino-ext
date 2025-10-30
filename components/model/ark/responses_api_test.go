@@ -20,6 +20,7 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	. "github.com/bytedance/mockey"
 	openaiOption "github.com/openai/openai-go/option"
@@ -38,7 +39,9 @@ func TestResponsesAPIChatModelGenerate(t *testing.T) {
 	PatchConvey("test Generate", t, func() {
 		Mock(callbacks.OnError).Return(context.Background()).Build()
 		Mock((*responsesAPIChatModel).genRequestAndOptions).
-			Return(responses.ResponseNewParams{}, nil, nil).Build()
+			Return(&responsesAPIRequestParams{
+				req: &responses.ResponseNewParams{},
+			}, nil).Build()
 		Mock((*responsesAPIChatModel).toCallbackConfig).
 			Return(&model.Config{}).Build()
 		MockGeneric(callbacks.OnStart[*callbacks.CallbackInput]).Return(context.Background()).Build()
@@ -70,7 +73,9 @@ func TestResponsesAPIChatModelStream(t *testing.T) {
 
 		Mock(callbacks.OnError).Return(ctx).Build()
 		Mock((*responsesAPIChatModel).genRequestAndOptions).
-			Return(responses.ResponseNewParams{}, nil, nil).Build()
+			Return(&responsesAPIRequestParams{
+				req: &responses.ResponseNewParams{},
+			}, nil).Build()
 		Mock((*responsesAPIChatModel).toCallbackConfig).
 			Return(&model.Config{}).Build()
 		MockGeneric(callbacks.OnStart[*callbacks.CallbackInput]).Return(context.Background()).Build()
@@ -104,18 +109,20 @@ func TestResponsesAPIChatModelStream(t *testing.T) {
 
 func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 	cm := &responsesAPIChatModel{}
-	initialReq := responses.ResponseNewParams{
-		Model: "test-model",
-	}
 
 	PatchConvey("empty input message", t, func() {
+		req := &responses.ResponseNewParams{
+			Model: "test-model",
+		}
 		in := []*schema.Message{}
-		req, err := cm.injectInput(initialReq, in)
+		err := cm.populateInput(req, in)
 		assert.Nil(t, err)
-		assert.Equal(t, initialReq, req)
 	})
 
 	PatchConvey("user message", t, func() {
+		req := &responses.ResponseNewParams{
+			Model: "test-model",
+		}
 		in := []*schema.Message{
 			{
 				Role:    schema.User,
@@ -123,9 +130,8 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 			},
 		}
 
-		req, err := cm.injectInput(initialReq, in)
+		err := cm.populateInput(req, in)
 		assert.Nil(t, err)
-		assert.Equal(t, initialReq.Model, req.Model)
 		assert.Equal(t, 1, len(req.Input.OfInputItemList))
 
 		item := req.Input.OfInputItemList[0]
@@ -134,6 +140,9 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 	})
 
 	PatchConvey("assistant message", t, func() {
+		req := &responses.ResponseNewParams{
+			Model: "test-model",
+		}
 		in := []*schema.Message{
 			{
 				Role:    schema.Assistant,
@@ -141,9 +150,8 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 			},
 		}
 
-		req, err := cm.injectInput(initialReq, in)
+		err := cm.populateInput(req, in)
 		assert.Nil(t, err)
-		assert.Equal(t, initialReq.Model, req.Model)
 		assert.Equal(t, 1, len(req.Input.OfInputItemList))
 
 		item := req.Input.OfInputItemList[0]
@@ -152,6 +160,9 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 	})
 
 	PatchConvey("system message", t, func() {
+		req := &responses.ResponseNewParams{
+			Model: "test-model",
+		}
 		in := []*schema.Message{
 			{
 				Role:    schema.System,
@@ -159,9 +170,8 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 			},
 		}
 
-		req, err := cm.injectInput(initialReq, in)
+		err := cm.populateInput(req, in)
 		assert.Nil(t, err)
-		assert.Equal(t, initialReq.Model, req.Model)
 		assert.Equal(t, 1, len(req.Input.OfInputItemList))
 
 		item := req.Input.OfInputItemList[0]
@@ -170,6 +180,9 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 	})
 
 	PatchConvey("tool call", t, func() {
+		req := &responses.ResponseNewParams{
+			Model: "test-model",
+		}
 		in := []*schema.Message{
 			{
 				Role:       schema.Tool,
@@ -178,9 +191,8 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 			},
 		}
 
-		req, err := cm.injectInput(initialReq, in)
+		err := cm.populateInput(req, in)
 		assert.Nil(t, err)
-		assert.Equal(t, initialReq.Model, req.Model)
 		assert.Equal(t, 1, len(req.Input.OfInputItemList))
 
 		item := req.Input.OfInputItemList[0]
@@ -189,6 +201,9 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 	})
 
 	PatchConvey("unknown role", t, func() {
+		req := &responses.ResponseNewParams{
+			Model: "test-model",
+		}
 		in := []*schema.Message{
 			{
 				Role:    "unknown_role",
@@ -196,7 +211,7 @@ func TestResponsesAPIChatModelInjectInput(t *testing.T) {
 			},
 		}
 
-		_, err := cm.injectInput(initialReq, in)
+		err := cm.populateInput(req, in)
 		assert.NotNil(t, err)
 	})
 }
@@ -211,7 +226,7 @@ func TestResponsesAPIChatModelToOpenaiMultiModalContent(t *testing.T) {
 				{
 					Type: schema.ChatMessagePartTypeImageURL,
 					ImageURL: &schema.ChatMessageImageURL{
-						URL: "http://example.com/image.png",
+						URL: "https://example.com/image.png",
 					},
 				},
 			},
@@ -222,30 +237,7 @@ func TestResponsesAPIChatModelToOpenaiMultiModalContent(t *testing.T) {
 
 		contentList := content.OfInputItemContentList
 		assert.Equal(t, 1, len(contentList))
-		assert.Equal(t, "http://example.com/image.png", contentList[0].OfInputImage.ImageURL.Value)
-	})
-
-	PatchConvey("text and file message", t, func() {
-		msg := &schema.Message{
-			Role:    schema.User,
-			Content: "Here is the file.",
-			MultiContent: []schema.ChatMessagePart{
-				{
-					Type: schema.ChatMessagePartTypeFileURL,
-					FileURL: &schema.ChatMessageFileURL{
-						URL: "http://example.com/file.pdf",
-					},
-				},
-			},
-		}
-
-		content, err := cm.toOpenaiMultiModalContent(msg)
-		assert.Nil(t, err)
-
-		contentList := content.OfInputItemContentList
-		assert.Equal(t, 2, len(contentList))
-		assert.Equal(t, "Here is the file.", contentList[0].OfInputText.Text)
-		assert.Equal(t, "http://example.com/file.pdf", contentList[1].OfInputFile.FileURL.Value)
+		assert.Equal(t, "https://example.com/image.png", contentList[0].OfInputImage.ImageURL.Value)
 	})
 
 	PatchConvey("unknown modal type", t, func() {
@@ -306,14 +298,25 @@ func TestResponsesAPIChatModelInjectCache(t *testing.T) {
 
 		arkOpts := &arkOptions{}
 		initialReqOptsLen := len(reqOpts)
+		msgs := []*schema.Message{
+			{
+				Role:    schema.User,
+				Content: "Hello",
+			},
+		}
 
-		newReq, newReqOpts, err := cm.injectCache(req, arkOpts, reqOpts)
+		reqParams := &responsesAPIRequestParams{
+			req: &req,
+		}
+
+		in_, reqParams, err := cm.populateCache(msgs, reqParams, arkOpts)
 		assert.Nil(t, err)
-		assert.Equal(t, param.NewOpt(false), newReq.Store)
-		assert.Equal(t, initialReqOptsLen+1, len(newReqOpts))
+		assert.Equal(t, param.NewOpt(false), reqParams.req.Store)
+		assert.Equal(t, initialReqOptsLen+1, len(reqParams.opts))
+		assert.Len(t, in_, 1)
 	})
 
-	PatchConvey("enable cache and set ttl", t, func() {
+	PatchConvey("enable cache", t, func() {
 		var (
 			req     = responses.ResponseNewParams{}
 			reqOpts []openaiOption.RequestOption
@@ -329,11 +332,33 @@ func TestResponsesAPIChatModelInjectCache(t *testing.T) {
 
 		arkOpts := &arkOptions{}
 		initialReqOptsLen := len(reqOpts)
+		msgs := []*schema.Message{
+			{
+				Role:    schema.User,
+				Content: "Hello",
+				Extra: map[string]any{
+					keyOfResponseID:            "test-response-id",
+					keyOfResponseCacheExpireAt: time.Now().Unix() + 259200,
+				},
+			},
+			{
+				Role:    schema.User,
+				Content: "World",
+			},
+		}
 
-		newReq, newReqOpts, err := cm.injectCache(req, arkOpts, reqOpts)
+		reqParams := &responsesAPIRequestParams{
+			req: &req,
+		}
+
+		in_, reqParams, err := cm.populateCache(msgs, reqParams, arkOpts)
 		assert.Nil(t, err)
-		assert.Equal(t, initialReqOptsLen+2, len(newReqOpts))
-		assert.Equal(t, param.NewOpt(true), newReq.Store)
+		assert.Equal(t, initialReqOptsLen+2, len(reqParams.opts))
+		assert.Equal(t, param.NewOpt(true), reqParams.req.Store)
+		assert.Equal(t, "test-response-id", reqParams.req.PreviousResponseID.Value)
+		assert.Len(t, in_, 1)
+		assert.Equal(t, "World", in_[0].Content)
+		assert.NotNil(t, reqParams.cache.ExpireAt)
 	})
 
 	PatchConvey("option overridden config", t, func() {
@@ -361,19 +386,37 @@ func TestResponsesAPIChatModelInjectCache(t *testing.T) {
 		}
 
 		initialReqOptsLen := len(reqOpts)
+		msgs := []*schema.Message{
+			{
+				Role:    schema.User,
+				Content: "Hello",
+				Extra: map[string]any{
+					keyOfResponseID:            "test-response-id",
+					keyOfResponseCacheExpireAt: time.Now().Unix() + 259200,
+				},
+			},
+			{
+				Role:    schema.User,
+				Content: "World",
+			},
+		}
 
-		newReq, newReqOpts, err := cm.injectCache(req, arkOpts, reqOpts)
+		reqParams := &responsesAPIRequestParams{
+			req: &req,
+		}
+		in_, reqParams, err := cm.populateCache(msgs, reqParams, arkOpts)
 		assert.Nil(t, err)
-		assert.Equal(t, initialReqOptsLen+2, len(newReqOpts))
-		assert.Equal(t, param.NewOpt(true), newReq.Store)
-		assert.Equal(t, contextID, newReq.PreviousResponseID.Value)
+		assert.Equal(t, initialReqOptsLen+2, len(reqParams.opts))
+		assert.Equal(t, param.NewOpt(true), reqParams.req.Store)
+		assert.Equal(t, "test-context", reqParams.req.PreviousResponseID.Value)
+		assert.Len(t, in_, 2)
+		assert.NotNil(t, reqParams.cache.ExpireAt)
 	})
 }
 
-func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
+func TestResponsesAPIChatModelReceivedStreamResponse_ResponseCreatedEvent(t *testing.T) {
 	cm := &responsesAPIChatModel{}
 	streamResp := &ssestream.Stream[responses.ResponseStreamEventUnion]{}
-
 	PatchConvey("ResponseCreatedEvent", t, func() {
 		MockGeneric((*ssestream.Stream[responses.ResponseStreamEventUnion]).Next).
 			Return(Sequence(true).Then(false)).Build()
@@ -384,10 +427,14 @@ func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
 			Return(responses.ResponseCreatedEvent{}).Build()
 		mocker := Mock((*responsesAPIChatModel).sendCallbackOutput).Return().Build()
 
-		cm.receivedStreamResponse(streamResp, nil, nil)
+		cm.receivedStreamResponse(streamResp, nil, &cacheConfig{Enabled: true}, nil)
 		assert.Equal(t, 1, mocker.Times())
 	})
+}
 
+func TestResponsesAPIChatModelReceivedStreamResponse_ResponseCompletedEvent(t *testing.T) {
+	cm := &responsesAPIChatModel{}
+	streamResp := &ssestream.Stream[responses.ResponseStreamEventUnion]{}
 	PatchConvey("ResponseCompletedEvent", t, func() {
 		MockGeneric((*ssestream.Stream[responses.ResponseStreamEventUnion]).Next).
 			Return(true).Build()
@@ -399,10 +446,14 @@ func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
 			Return(responses.ResponseCompletedEvent{}).Build()
 		Mock((*responsesAPIChatModel).handleCompletedStreamEvent).Return(&schema.Message{}).Build()
 
-		cm.receivedStreamResponse(streamResp, nil, nil)
+		cm.receivedStreamResponse(streamResp, nil, &cacheConfig{Enabled: true}, nil)
 		assert.Equal(t, 1, mocker.Times())
 	})
+}
 
+func TestResponsesAPIChatModelReceivedStreamResponse_ResponseErrorEvent(t *testing.T) {
+	cm := &responsesAPIChatModel{}
+	streamResp := &ssestream.Stream[responses.ResponseStreamEventUnion]{}
 	PatchConvey("ResponseErrorEvent", t, func() {
 		MockGeneric((*ssestream.Stream[responses.ResponseStreamEventUnion]).Next).
 			Return(true).Build()
@@ -415,10 +466,15 @@ func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
 
 		Mock((*responsesAPIChatModel).handleCompletedStreamEvent).Return(&schema.Message{}).Build()
 
-		cm.receivedStreamResponse(streamResp, nil, nil)
+		cache := &cacheConfig{Enabled: true}
+		cm.receivedStreamResponse(streamResp, nil, cache, nil)
 		assert.Equal(t, 1, mocker.Times())
 	})
+}
 
+func TestResponsesAPIChatModelReceivedStreamResponse_ResponseIncompleteEvent(t *testing.T) {
+	cm := &responsesAPIChatModel{}
+	streamResp := &ssestream.Stream[responses.ResponseStreamEventUnion]{}
 	PatchConvey("ResponseIncompleteEvent", t, func() {
 		MockGeneric((*ssestream.Stream[responses.ResponseStreamEventUnion]).Next).
 			Return(Sequence(true).Then(false)).Build()
@@ -430,10 +486,15 @@ func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
 			Return(responses.ResponseIncompleteEvent{}).Build()
 		Mock((*responsesAPIChatModel).handleIncompleteStreamEvent).Return(&schema.Message{}).Build()
 
-		cm.receivedStreamResponse(streamResp, nil, nil)
+		cache := &cacheConfig{Enabled: true}
+		cm.receivedStreamResponse(streamResp, nil, cache, nil)
 		assert.Equal(t, 1, mocker.Times())
 	})
+}
 
+func TestResponsesAPIChatModelReceivedStreamResponse_ResponseFailedEvent(t *testing.T) {
+	cm := &responsesAPIChatModel{}
+	streamResp := &ssestream.Stream[responses.ResponseStreamEventUnion]{}
 	PatchConvey("ResponseFailedEvent", t, func() {
 		MockGeneric((*ssestream.Stream[responses.ResponseStreamEventUnion]).Next).
 			Return(true).Build()
@@ -445,10 +506,15 @@ func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
 			Return(responses.ResponseFailedEvent{}).Build()
 		Mock((*responsesAPIChatModel).handleFailedStreamEvent).Return(&schema.Message{}).Build()
 
-		cm.receivedStreamResponse(streamResp, nil, nil)
+		cache := &cacheConfig{Enabled: true}
+		cm.receivedStreamResponse(streamResp, nil, cache, nil)
 		assert.Equal(t, 1, mocker.Times())
 	})
+}
 
+func TestResponsesAPIChatModelReceivedStreamResponse_Default(t *testing.T) {
+	cm := &responsesAPIChatModel{}
+	streamResp := &ssestream.Stream[responses.ResponseStreamEventUnion]{}
 	PatchConvey("Default", t, func() {
 		MockGeneric((*ssestream.Stream[responses.ResponseStreamEventUnion]).Next).
 			Return(Sequence(true).Then(false)).Build()
@@ -460,10 +526,15 @@ func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
 		mocker := Mock((*responsesAPIChatModel).sendCallbackOutput).Return().Build()
 		Mock((*responsesAPIChatModel).handleDeltaStreamEvent).Return(&schema.Message{}).Build()
 
-		cm.receivedStreamResponse(streamResp, nil, nil)
+		cache := &cacheConfig{Enabled: true}
+		cm.receivedStreamResponse(streamResp, nil, cache, nil)
 		assert.Equal(t, 1, mocker.Times())
 	})
+}
 
+func TestResponsesAPIChatModelReceivedStreamResponse_ToolCallMetaMsg(t *testing.T) {
+	cm := &responsesAPIChatModel{}
+	streamResp := &ssestream.Stream[responses.ResponseStreamEventUnion]{}
 	PatchConvey("toolCallMetaMsg", t, func() {
 		MockGeneric((*ssestream.Stream[responses.ResponseStreamEventUnion]).Next).
 			Return(Sequence(true).Then(true).Then(false)).Build()
@@ -505,7 +576,8 @@ func TestResponsesAPIChatModelReceivedStreamResponse(t *testing.T) {
 				assert.Equal(t, "function", msg.ToolCalls[0].Type)
 			}).Build()
 
-		cm.receivedStreamResponse(streamResp, nil, nil)
+		cache := &cacheConfig{Enabled: true}
+		cm.receivedStreamResponse(streamResp, nil, cache, nil)
 		assert.Equal(t, 1, mocker.Times())
 	})
 }
@@ -551,6 +623,12 @@ func TestResponsesAPIChatModelHandleGenRequestAndOptions(t *testing.T) {
 		customHeader: map[string]string{
 			"h1": "v1",
 		},
+		responseFormat: &ResponseFormat{
+			Type: arkModel.ResponseFormatJSONSchema,
+			JSONSchema: &arkModel.ResponseFormatJSONSchemaJSONSchemaParam{
+				Name: "json_schema",
+			},
+		},
 	}
 
 	PatchConvey("", t, func() {
@@ -568,9 +646,9 @@ func TestResponsesAPIChatModelHandleGenRequestAndOptions(t *testing.T) {
 			return nil
 		}).Build()
 
-		Mock((*responsesAPIChatModel).injectCache).To(func(req responses.ResponseNewParams, arkOpts *arkOptions,
-			reqOpts []openaiOption.RequestOption) (responses.ResponseNewParams, []openaiOption.RequestOption, error) {
-			return req, reqOpts, nil
+		Mock((*responsesAPIChatModel).populateCache).To(func(in []*schema.Message, reqParams *responsesAPIRequestParams, arkOpts *arkOptions,
+		) ([]*schema.Message, *responsesAPIRequestParams, error) {
+			return in, reqParams, nil
 		}).Build()
 
 		in := []*schema.Message{
@@ -608,14 +686,15 @@ func TestResponsesAPIChatModelHandleGenRequestAndOptions(t *testing.T) {
 		options, specOptions, err := cm.getOptions(opts)
 		assert.NoError(t, err)
 
-		req, reqOpts, err := cm.genRequestAndOptions(in, options, specOptions)
+		reqParams, err := cm.genRequestAndOptions(in, options, specOptions)
 		assert.Nil(t, err)
-		assert.Equal(t, "model2", req.Model)
-		assert.Len(t, req.Input.OfInputItemList, 1)
-		assert.Equal(t, "user", req.Input.OfInputItemList[0].OfMessage.Content.OfString.Value)
-		assert.Len(t, req.Tools, 1)
-		assert.Equal(t, "test tool", req.Tools[0].OfFunction.Name)
-		assert.Len(t, reqOpts, 3)
+		assert.Equal(t, "model2", reqParams.req.Model)
+		assert.Len(t, reqParams.req.Input.OfInputItemList, 1)
+		assert.Equal(t, "user", reqParams.req.Input.OfInputItemList[0].OfMessage.Content.OfString.Value)
+		assert.Len(t, reqParams.req.Tools, 1)
+		assert.Equal(t, "test tool", reqParams.req.Tools[0].OfFunction.Name)
+		assert.Len(t, reqParams.opts, 3)
+		assert.Equal(t, "json_schema", reqParams.req.Text.Format.OfJSONSchema.Name)
 	})
 }
 
@@ -638,5 +717,143 @@ func TestResponsesAPIChatModelIsAddedToolCall(t *testing.T) {
 		assert.Equal(t, "123", msg.ToolCalls[0].ID)
 		assert.Equal(t, "function_call", msg.ToolCalls[0].Type)
 		assert.Equal(t, "name", msg.ToolCalls[0].Function.Name)
+	})
+}
+
+func TestGetArkRequestID(t *testing.T) {
+	item := responses.EasyInputMessageContentUnionParam{}
+	if item.OfString.Valid() {
+		t.Log("eq")
+	}
+}
+
+func TestResponsesAPIChatModel_toOpenaiMultiModalContent(t *testing.T) {
+	cm := &responsesAPIChatModel{}
+	base64Data := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+	httpURL := "https://example.com/image.png"
+
+	PatchConvey("Test toOpenaiMultiModalContent Comprehensive", t, func() {
+		PatchConvey("Pure Text Content", func() {
+			msg := &schema.Message{Role: schema.User, Content: "just text"}
+			content, err := cm.toOpenaiMultiModalContent(msg)
+			assert.Nil(t, err)
+			assert.Equal(t, "just text", content.OfString.Value)
+		})
+
+		PatchConvey("UserInputMultiContent", func() {
+			PatchConvey("Success with all types", func() {
+				msg := &schema.Message{
+					Role:    schema.User,
+					Content: "initial text",
+					UserInputMultiContent: []schema.MessageInputPart{
+						{Type: schema.ChatMessagePartTypeText, Text: " more text"},
+						{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{URL: &httpURL}}},
+						{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &base64Data, MIMEType: "image/png"}}},
+					},
+				}
+				content, err := cm.toOpenaiMultiModalContent(msg)
+				assert.Nil(t, err)
+				assert.Len(t, content.OfInputItemContentList, 4)
+			})
+
+			PatchConvey("Error on missing MIMEType for Base64", func() {
+				msg := &schema.Message{
+					Role: schema.User,
+					UserInputMultiContent: []schema.MessageInputPart{
+						{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &base64Data}}},
+					},
+				}
+				_, err := cm.toOpenaiMultiModalContent(msg)
+				assert.NotNil(t, err)
+				assert.ErrorContains(t, err, "image part must have MIMEType when use Base64Data")
+			})
+
+			PatchConvey("Error on nil Image", func() {
+				msg := &schema.Message{
+					Role: schema.User,
+					UserInputMultiContent: []schema.MessageInputPart{
+						{Type: schema.ChatMessagePartTypeImageURL, Image: nil},
+					},
+				}
+				_, err := cm.toOpenaiMultiModalContent(msg)
+				assert.NotNil(t, err)
+				assert.ErrorContains(t, err, "image field must not be nil")
+			})
+
+		})
+
+		PatchConvey("AssistantGenMultiContent", func() {
+			PatchConvey("Success with all types", func() {
+				msg := &schema.Message{
+					Role:    schema.Assistant,
+					Content: "assistant text",
+					AssistantGenMultiContent: []schema.MessageOutputPart{
+						{Type: schema.ChatMessagePartTypeText, Text: " more assistant text"},
+						{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageOutputImage{MessagePartCommon: schema.MessagePartCommon{URL: &httpURL}}},
+						{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &base64Data, MIMEType: "image/png"}}},
+					},
+				}
+				content, err := cm.toOpenaiMultiModalContent(msg)
+				assert.Nil(t, err)
+				assert.Len(t, content.OfInputItemContentList, 4)
+			})
+
+			PatchConvey("Error on wrong role", func() {
+				msg := &schema.Message{
+					Role:                     schema.User,
+					AssistantGenMultiContent: []schema.MessageOutputPart{{}},
+				}
+				_, err := cm.toOpenaiMultiModalContent(msg)
+				assert.NotNil(t, err)
+				assert.ErrorContains(t, err, "assistant gen multi content only support assistant role")
+			})
+
+			PatchConvey("Error on nil Image", func() {
+				msg := &schema.Message{
+					Role: schema.Assistant,
+					AssistantGenMultiContent: []schema.MessageOutputPart{
+						{Type: schema.ChatMessagePartTypeImageURL, Image: nil},
+					},
+				}
+				_, err := cm.toOpenaiMultiModalContent(msg)
+				assert.NotNil(t, err)
+				assert.ErrorContains(t, err, "image field must not be nil")
+			})
+
+			PatchConvey("Error on missing MIMEType for Base64", func() {
+				msg := &schema.Message{
+					Role: schema.Assistant,
+					AssistantGenMultiContent: []schema.MessageOutputPart{
+						{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageOutputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &base64Data}}},
+					},
+				}
+				_, err := cm.toOpenaiMultiModalContent(msg)
+				assert.NotNil(t, err)
+				assert.ErrorContains(t, err, "image part must have MIMEType when use Base64Data")
+			})
+		})
+
+		PatchConvey("MultiContent (Legacy)", func() {
+			msg := &schema.Message{
+				Content: "legacy text",
+				MultiContent: []schema.ChatMessagePart{
+					{Type: schema.ChatMessagePartTypeText, Text: " more legacy text"},
+					{Type: schema.ChatMessagePartTypeImageURL, ImageURL: &schema.ChatMessageImageURL{URL: httpURL}},
+				},
+			}
+			content, err := cm.toOpenaiMultiModalContent(msg)
+			assert.Nil(t, err)
+			assert.Len(t, content.OfInputItemContentList, 3)
+		})
+
+		PatchConvey("Error on both UserInputMultiContent and AssistantGenMultiContent", func() {
+			msg := &schema.Message{
+				UserInputMultiContent:    []schema.MessageInputPart{{Type: schema.ChatMessagePartTypeText, Text: "user"}},
+				AssistantGenMultiContent: []schema.MessageOutputPart{{Type: schema.ChatMessagePartTypeText, Text: "assistant"}},
+			}
+			_, err := cm.toOpenaiMultiModalContent(msg)
+			assert.NotNil(t, err)
+			assert.ErrorContains(t, err, "a message cannot contain both UserInputMultiContent and AssistantGenMultiContent")
+		})
 	})
 }
